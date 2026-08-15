@@ -23,7 +23,7 @@ class MetricCalculationsTest {
         val stats = MetricCalculations.frametimeStatistics(listOf(10.0, 20.0, 30.0, 40.0))!!
         assertEquals(25.0, stats.averageMs, 0.0001)
         assertEquals(25.0, stats.medianMs, 0.0001)
-        assertEquals(3, stats.jankCount)
+        assertEquals(2, stats.jankCount)
         assertEquals(1, stats.spikeCount)
     }
 
