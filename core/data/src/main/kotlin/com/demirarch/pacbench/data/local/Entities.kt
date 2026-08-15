@@ -21,6 +21,12 @@ data class Game(
     val packageName: String,
     @ColumnInfo(name = "display_name")
     val displayName: String,
+    @ColumnInfo(name = "app_name")
+    val appName: String = displayName,
+    @ColumnInfo(name = "custom_name")
+    val customName: String? = null,
+    @ColumnInfo(name = "icon_reference")
+    val iconReference: String? = null,
     @ColumnInfo(name = "version_name")
     val versionName: String? = null,
     @ColumnInfo(name = "version_code")
@@ -29,10 +35,20 @@ data class Game(
     val isFavorite: Boolean = false,
     @ColumnInfo(name = "first_seen_at")
     val firstSeenAt: Long,
+    @ColumnInfo(name = "added_at")
+    val addedAt: Long = firstSeenAt,
     @ColumnInfo(name = "last_seen_at")
     val lastSeenAt: Long,
     @ColumnInfo(name = "last_played_at")
     val lastPlayedAt: Long? = null,
+    @ColumnInfo(name = "launch_configuration")
+    val launchConfiguration: String? = null,
+    @ColumnInfo(name = "selected_hud_preset_id")
+    val selectedHudPresetId: String? = null,
+    @ColumnInfo(name = "auto_monitoring")
+    val autoMonitoring: Boolean = true,
+    @ColumnInfo(name = "auto_overlay")
+    val autoOverlay: Boolean = true,
 )
 
 enum class SessionStatus {
@@ -66,6 +82,8 @@ data class PerformanceSession(
     val startedAt: Long,
     @ColumnInfo(name = "ended_at")
     val endedAt: Long? = null,
+    @ColumnInfo(name = "duration_millis")
+    val durationMillis: Long? = null,
     @ColumnInfo(name = "access_mode")
     val accessMode: AccessMode,
     val status: SessionStatus = SessionStatus.RUNNING,
@@ -79,6 +97,38 @@ data class PerformanceSession(
     val appVersion: String,
     @ColumnInfo(name = "data_quality_summary")
     val dataQualitySummary: String = "",
+    @ColumnInfo(name = "average_fps")
+    val averageFps: Double? = null,
+    @ColumnInfo(name = "median_fps")
+    val medianFps: Double? = null,
+    @ColumnInfo(name = "min_fps")
+    val minFps: Double? = null,
+    @ColumnInfo(name = "max_fps")
+    val maxFps: Double? = null,
+    @ColumnInfo(name = "one_percent_low")
+    val onePercentLow: Double? = null,
+    @ColumnInfo(name = "point_one_percent_low")
+    val pointOnePercentLow: Double? = null,
+    @ColumnInfo(name = "average_cpu")
+    val averageCpu: Double? = null,
+    @ColumnInfo(name = "average_gpu")
+    val averageGpu: Double? = null,
+    @ColumnInfo(name = "max_cpu_temp")
+    val maxCpuTemp: Double? = null,
+    @ColumnInfo(name = "max_gpu_temp")
+    val maxGpuTemp: Double? = null,
+    @ColumnInfo(name = "max_battery_temp")
+    val maxBatteryTemp: Double? = null,
+    @ColumnInfo(name = "average_power")
+    val averagePower: Double? = null,
+    @ColumnInfo(name = "battery_start")
+    val batteryStart: Double? = null,
+    @ColumnInfo(name = "battery_end")
+    val batteryEnd: Double? = null,
+    @ColumnInfo(name = "thermal_event_count")
+    val thermalEventCount: Int = 0,
+    @ColumnInfo(name = "is_favorite")
+    val isFavorite: Boolean = false,
     val notes: String? = null,
 )
 

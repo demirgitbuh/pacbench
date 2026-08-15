@@ -131,8 +131,8 @@ fun MetricSnapshot.toSampleData(): SampleData = SampleData(
     gpuUsage = this[MetricId.GPU_USAGE]?.value,
     gpuFrequency = this[MetricId.GPU_FREQUENCY]?.value,
     gpuTemp = this[MetricId.GPU_TEMPERATURE]?.value,
-    ramUsed = this[MetricId.RAM_USED]?.value?.toLong(),
-    ramAvailable = this[MetricId.RAM_AVAILABLE]?.value?.toLong(),
+    ramUsed = this[MetricId.RAM_USED]?.value?.times(BYTES_PER_DECIMAL_GB)?.toLong(),
+    ramAvailable = this[MetricId.RAM_AVAILABLE]?.value?.times(BYTES_PER_DECIMAL_GB)?.toLong(),
     batteryLevel = this[MetricId.BATTERY_LEVEL]?.value,
     batteryTemp = this[MetricId.BATTERY_TEMPERATURE]?.value,
     voltage = this[MetricId.VOLTAGE]?.value,
@@ -143,3 +143,5 @@ fun MetricSnapshot.toSampleData(): SampleData = SampleData(
     ping = this[MetricId.PING]?.value,
     thermalState = this[MetricId.THERMAL_STATUS]?.value?.toInt(),
 )
+
+private const val BYTES_PER_DECIMAL_GB = 1_000_000_000.0

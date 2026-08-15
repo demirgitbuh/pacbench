@@ -6,7 +6,9 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
+import androidx.room.Update
 import androidx.room.Upsert
+import com.demirarch.pacbench.model.MetricCalculations
 import com.demirarch.pacbench.model.SampleData
 import kotlinx.coroutines.flow.Flow
 
@@ -287,7 +289,32 @@ abstract class PerformanceSessionDao {
         require(latestSampleAt == null || endedAt >= latestSampleAt) {
             "Session cannot end before its latest sample"
         }
-        return markFinalized(sessionId, endedAt, dataQualitySummary, notes) == 1
+        val samples = getSamplesInRange(sessionId).map(PerformanceSample::toSampleData)
+        val summary = MetricCalculations.sessionSummary(samples)
+        return updateSession(
+            session.copy(
+                endedAt = endedAt,
+                durationMillis = endedAt - session.startedAt,
+                status = SessionStatus.COMPLETED,
+                dataQualitySummary = dataQualitySummary,
+                averageFps = summary.averageFps,
+                medianFps = summary.medianFps,
+                minFps = summary.minFps,
+                maxFps = summary.maxFps,
+                onePercentLow = summary.onePercentLow,
+                pointOnePercentLow = summary.pointOnePercentLow,
+                averageCpu = summary.averageCpu,
+                averageGpu = summary.averageGpu,
+                maxCpuTemp = summary.maxCpuTemp,
+                maxGpuTemp = summary.maxGpuTemp,
+                maxBatteryTemp = summary.maxBatteryTemp,
+                averagePower = summary.averagePower,
+                batteryStart = samples.firstNotNullOfOrNull(SampleData::batteryLevel),
+                batteryEnd = samples.asReversed().firstNotNullOfOrNull(SampleData::batteryLevel),
+                thermalEventCount = summary.thermalEventCount,
+                notes = notes ?: session.notes,
+            ),
+        ) == 1
     }
 
     @Transaction
@@ -333,22 +360,8 @@ abstract class PerformanceSessionDao {
     @Query("SELECT MAX(timestamp) FROM performance_samples WHERE session_id = :sessionId")
     protected abstract suspend fun findLatestSampleTimestamp(sessionId: Long): Long?
 
-    @Query(
-        """
-        UPDATE performance_sessions SET
-            ended_at = :endedAt,
-            status = 'COMPLETED',
-            data_quality_summary = :dataQualitySummary,
-            notes = COALESCE(:notes, notes)
-        WHERE id = :sessionId AND status = 'RUNNING'
-        """,
-    )
-    protected abstract suspend fun markFinalized(
-        sessionId: Long,
-        endedAt: Long,
-        dataQualitySummary: String,
-        notes: String?,
-    ): Int
+    @Update
+    protected abstract suspend fun updateSession(session: PerformanceSession): Int
 
     @Query(
         """

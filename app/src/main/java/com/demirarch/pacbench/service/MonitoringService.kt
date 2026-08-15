@@ -89,7 +89,8 @@ class MonitoringService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action ?: ACTION_START_PACKAGE) {
+        val commandIntent = intent ?: Intent().setAction(ACTION_START_PACKAGE)
+        when (commandIntent.action ?: ACTION_START_PACKAGE) {
             ACTION_STOP -> {
                 startupJob?.cancel()
                 serviceScope.launch {
@@ -107,13 +108,13 @@ class MonitoringService : Service() {
             ACTION_START_AUTOMATIC -> {
                 startForeground(NOTIFICATION_ID, buildNotification("Looking for a foreground game"))
                 launchStartup {
-                    lifecycleMutex.withLock { startAutomatic(intent, startId) }
+                    lifecycleMutex.withLock { startAutomatic(commandIntent, startId) }
                 }
             }
             ACTION_START_PACKAGE -> {
                 startForeground(NOTIFICATION_ID, buildNotification("Preparing performance monitoring"))
                 launchStartup {
-                    lifecycleMutex.withLock { startExplicit(intent, startId) }
+                    lifecycleMutex.withLock { startExplicit(commandIntent, startId) }
                 }
             }
             else -> {
