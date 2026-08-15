@@ -1,0 +1,439 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 1,
+    "identityHash": "4efafb474c0a507f5a1d283163f54b23",
+    "entities": [
+      {
+        "tableName": "games",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `package_name` TEXT NOT NULL, `display_name` TEXT NOT NULL, `version_name` TEXT, `version_code` INTEGER, `is_favorite` INTEGER NOT NULL, `first_seen_at` INTEGER NOT NULL, `last_seen_at` INTEGER NOT NULL, `last_played_at` INTEGER)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "packageName",
+            "columnName": "package_name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "displayName",
+            "columnName": "display_name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "versionName",
+            "columnName": "version_name",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "versionCode",
+            "columnName": "version_code",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "isFavorite",
+            "columnName": "is_favorite",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "firstSeenAt",
+            "columnName": "first_seen_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastSeenAt",
+            "columnName": "last_seen_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastPlayedAt",
+            "columnName": "last_played_at",
+            "affinity": "INTEGER"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_games_package_name",
+            "unique": true,
+            "columnNames": [
+              "package_name"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_games_package_name` ON `${TABLE_NAME}` (`package_name`)"
+          }
+        ]
+      },
+      {
+        "tableName": "performance_sessions",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `game_id` INTEGER NOT NULL, `started_at` INTEGER NOT NULL, `ended_at` INTEGER, `access_mode` TEXT NOT NULL, `status` TEXT NOT NULL, `device_manufacturer` TEXT NOT NULL, `device_model` TEXT NOT NULL, `android_version` TEXT NOT NULL, `app_version` TEXT NOT NULL, `data_quality_summary` TEXT NOT NULL, `notes` TEXT, FOREIGN KEY(`game_id`) REFERENCES `games`(`id`) ON UPDATE NO ACTION ON DELETE RESTRICT )",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "gameId",
+            "columnName": "game_id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "startedAt",
+            "columnName": "started_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "endedAt",
+            "columnName": "ended_at",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "accessMode",
+            "columnName": "access_mode",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "deviceManufacturer",
+            "columnName": "device_manufacturer",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "deviceModel",
+            "columnName": "device_model",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "androidVersion",
+            "columnName": "android_version",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "appVersion",
+            "columnName": "app_version",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "dataQualitySummary",
+            "columnName": "data_quality_summary",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "notes",
+            "columnName": "notes",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_performance_sessions_game_id",
+            "unique": false,
+            "columnNames": [
+              "game_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_performance_sessions_game_id` ON `${TABLE_NAME}` (`game_id`)"
+          },
+          {
+            "name": "index_performance_sessions_started_at",
+            "unique": false,
+            "columnNames": [
+              "started_at"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_performance_sessions_started_at` ON `${TABLE_NAME}` (`started_at`)"
+          },
+          {
+            "name": "index_performance_sessions_game_id_started_at",
+            "unique": false,
+            "columnNames": [
+              "game_id",
+              "started_at"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_performance_sessions_game_id_started_at` ON `${TABLE_NAME}` (`game_id`, `started_at`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "games",
+            "onDelete": "RESTRICT",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "game_id"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "performance_samples",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `session_id` INTEGER NOT NULL, `timestamp` INTEGER NOT NULL, `fps` REAL, `frame_time` REAL, `cpu_usage` REAL, `cpu_frequency` REAL, `cpu_temp` REAL, `gpu_usage` REAL, `gpu_frequency` REAL, `gpu_temp` REAL, `ram_used` INTEGER, `ram_available` INTEGER, `battery_level` REAL, `battery_temp` REAL, `voltage` REAL, `current` REAL, `power_watts` REAL, `download_rate` REAL, `upload_rate` REAL, `ping` REAL, `thermal_state` INTEGER, FOREIGN KEY(`session_id`) REFERENCES `performance_sessions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sessionId",
+            "columnName": "session_id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "timestamp",
+            "columnName": "timestamp",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fps",
+            "columnName": "fps",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "frameTime",
+            "columnName": "frame_time",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "cpuUsage",
+            "columnName": "cpu_usage",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "cpuFrequency",
+            "columnName": "cpu_frequency",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "cpuTemp",
+            "columnName": "cpu_temp",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "gpuUsage",
+            "columnName": "gpu_usage",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "gpuFrequency",
+            "columnName": "gpu_frequency",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "gpuTemp",
+            "columnName": "gpu_temp",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "ramUsed",
+            "columnName": "ram_used",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "ramAvailable",
+            "columnName": "ram_available",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "batteryLevel",
+            "columnName": "battery_level",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "batteryTemp",
+            "columnName": "battery_temp",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "voltage",
+            "columnName": "voltage",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "current",
+            "columnName": "current",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "powerWatts",
+            "columnName": "power_watts",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "downloadRate",
+            "columnName": "download_rate",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "uploadRate",
+            "columnName": "upload_rate",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "ping",
+            "columnName": "ping",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "thermalState",
+            "columnName": "thermal_state",
+            "affinity": "INTEGER"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_performance_samples_session_id",
+            "unique": false,
+            "columnNames": [
+              "session_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_performance_samples_session_id` ON `${TABLE_NAME}` (`session_id`)"
+          },
+          {
+            "name": "index_performance_samples_timestamp",
+            "unique": false,
+            "columnNames": [
+              "timestamp"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_performance_samples_timestamp` ON `${TABLE_NAME}` (`timestamp`)"
+          },
+          {
+            "name": "index_performance_samples_session_id_timestamp",
+            "unique": false,
+            "columnNames": [
+              "session_id",
+              "timestamp"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_performance_samples_session_id_timestamp` ON `${TABLE_NAME}` (`session_id`, `timestamp`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "performance_sessions",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "session_id"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "hud_presets",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `name` TEXT NOT NULL, `preset_json` TEXT NOT NULL, `is_built_in` INTEGER NOT NULL, `created_at` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "presetJson",
+            "columnName": "preset_json",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isBuiltIn",
+            "columnName": "is_built_in",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "created_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updated_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_hud_presets_name",
+            "unique": false,
+            "columnNames": [
+              "name"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_hud_presets_name` ON `${TABLE_NAME}` (`name`)"
+          }
+        ]
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '4efafb474c0a507f5a1d283163f54b23')"
+    ]
+  }
+}

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">PacBench</string>
+    <string name="hud">HUD</string>
+    <string name="reports">Raporlar</string>
+    <string name="games">Oyunlar</string>
+    <string name="settings">Ayarlar</string>
+    <string name="unavailable">Kullanılamıyor</string>
+    <string name="monitoring_channel">Performans izleme</string>
+    <string name="monitoring_channel_description">Aktif PacBench izleme oturumlarını gösterir</string>
+    <string name="monitoring_notification">PacBench %1$s uygulamasını izliyor</string>
+    <string name="stop">Durdur</string>
+    <string name="toggle_hud">HUD aç/kapat</string>
+    <string name="open_app">PacBench'i aç</string>
+</resources>

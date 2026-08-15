@@ -1,0 +1,208 @@
+name: Android CI and release
+
+on:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+
+jobs:
+  verify:
+    name: Lint, test, and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Prepare Gradle Wrapper
+        run: chmod +x ./gradlew
+
+      - name: Run lint and unit tests
+        run: ./gradlew --no-daemon --stacktrace lint test
+
+      - name: Assemble debug build
+        run: ./gradlew --no-daemon --stacktrace assembleDebug
+
+      - name: Verify unsigned release builds
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        run: ./gradlew --no-daemon --stacktrace assembleRelease bundleRelease
+
+  release:
+    name: Sign and publish release
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Prepare Gradle Wrapper
+        run: chmod +x ./gradlew
+
+      - name: Validate release inputs and decode keystore
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.PACBENCH_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.PACBENCH_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.PACBENCH_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.PACBENCH_KEY_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            printf '::error::Release tag must be a semantic version beginning with v; received %s\n' "$GITHUB_REF_NAME"
+            exit 1
+          fi
+
+          notes_file=".github/release-notes-${GITHUB_REF_NAME}.md"
+          if [[ ! -f "$notes_file" ]]; then
+            printf '::error::Release notes file is missing: %s\n' "$notes_file"
+            exit 1
+          fi
+
+          missing=()
+          [[ -n "${KEYSTORE_BASE64:-}" ]] || missing+=(PACBENCH_KEYSTORE_BASE64)
+          [[ -n "${KEYSTORE_PASSWORD:-}" ]] || missing+=(PACBENCH_KEYSTORE_PASSWORD)
+          [[ -n "${KEY_ALIAS:-}" ]] || missing+=(PACBENCH_KEY_ALIAS)
+          [[ -n "${KEY_PASSWORD:-}" ]] || missing+=(PACBENCH_KEY_PASSWORD)
+          if (( ${#missing[@]} > 0 )); then
+            joined="$(IFS=', '; printf '%s' "${missing[*]}")"
+            printf '::error::Missing required release secrets: %s\n' "$joined"
+            exit 1
+          fi
+
+          keystore="$RUNNER_TEMP/pacbench-release.jks"
+          umask 077
+          if ! printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$keystore"; then
+            rm -f -- "$keystore"
+            printf '::error::PACBENCH_KEYSTORE_BASE64 is not valid base64\n'
+            exit 1
+          fi
+          if [[ ! -s "$keystore" ]]; then
+            rm -f -- "$keystore"
+            printf '::error::Decoded release keystore is empty\n'
+            exit 1
+          fi
+          printf 'PACBENCH_KEYSTORE_PATH=%s\n' "$keystore" >> "$GITHUB_ENV"
+
+      - name: Build signed APK and app bundle
+        env:
+          PACBENCH_KEYSTORE_PASSWORD: ${{ secrets.PACBENCH_KEYSTORE_PASSWORD }}
+          PACBENCH_KEY_ALIAS: ${{ secrets.PACBENCH_KEY_ALIAS }}
+          PACBENCH_KEY_PASSWORD: ${{ secrets.PACBENCH_KEY_PASSWORD }}
+        run: ./gradlew --no-daemon --stacktrace assembleRelease bundleRelease
+
+      - name: Verify, name, and checksum release artifacts
+        id: artifacts
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          export LC_ALL=C
+
+          source_apk="app/build/outputs/apk/release/app-release.apk"
+          source_aab="app/build/outputs/bundle/release/app-release.aab"
+          for source_file in "$source_apk" "$source_aab"; do
+            if [[ ! -s "$source_file" ]]; then
+              printf '::error::Expected release output is missing or empty: %s\n' "$source_file"
+              exit 1
+            fi
+          done
+
+          sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          if [[ -z "$sdk_root" || ! -d "$sdk_root/build-tools" ]]; then
+            printf '::error::Android SDK build-tools directory was not found\n'
+            exit 1
+          fi
+          mapfile -t apksigners < <(find "$sdk_root/build-tools" -maxdepth 2 -type f -name apksigner -print | sort -V)
+          if (( ${#apksigners[@]} == 0 )); then
+            printf '::error::apksigner was not found in Android SDK build-tools\n'
+            exit 1
+          fi
+          apksigner="${apksigners[-1]}"
+          "$apksigner" verify --verbose "$source_apk"
+
+          aab_verification="$(jarsigner -verify "$source_aab" 2>&1)"
+          if [[ "$aab_verification" != *"jar verified."* ]]; then
+            printf '::error::AAB signature verification failed\n%s\n' "$aab_verification"
+            exit 1
+          fi
+
+          release_dir="$RUNNER_TEMP/pacbench-release"
+          version="$GITHUB_REF_NAME"
+          mkdir -p -- "$release_dir"
+          install -m 0644 "$source_apk" "$release_dir/PacBench-${version}.apk"
+          install -m 0644 "$source_aab" "$release_dir/PacBench-${version}.aab"
+          (
+            cd "$release_dir"
+            sha256sum "PacBench-${version}.apk" "PacBench-${version}.aab" > "PacBench-${version}-SHA256SUMS.txt"
+          )
+          printf 'release_dir=%s\n' "$release_dir" >> "$GITHUB_OUTPUT"
+
+      - name: Upload signed artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: PacBench-${{ github.ref_name }}
+          path: ${{ steps.artifacts.outputs.release_dir }}/PacBench-${{ github.ref_name }}*
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Create or update GitHub Release
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_DIR: ${{ steps.artifacts.outputs.release_dir }}
+        run: |
+          set -Eeuo pipefail
+          tag="$GITHUB_REF_NAME"
+          notes_file=".github/release-notes-${tag}.md"
+          files=(
+            "$RELEASE_DIR/PacBench-${tag}.apk"
+            "$RELEASE_DIR/PacBench-${tag}.aab"
+            "$RELEASE_DIR/PacBench-${tag}-SHA256SUMS.txt"
+          )
+
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$tag" "${files[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+            gh release edit "$tag" --title "PacBench $tag" --notes-file "$notes_file" --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$tag" "${files[@]}" --verify-tag --title "PacBench $tag" --notes-file "$notes_file" --repo "$GITHUB_REPOSITORY"
+          fi
+
+      - name: Remove release keystore
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          rm -f -- "$RUNNER_TEMP/pacbench-release.jks"

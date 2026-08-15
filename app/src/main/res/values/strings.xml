@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">PacBench</string>
+    <string name="hud">HUD</string>
+    <string name="reports">Reports</string>
+    <string name="games">Games</string>
+    <string name="settings">Settings</string>
+    <string name="unavailable">Unavailable</string>
+    <string name="monitoring_channel">Performance monitoring</string>
+    <string name="monitoring_channel_description">Shows active PacBench monitoring sessions</string>
+    <string name="monitoring_notification">PacBench monitoring %1$s</string>
+    <string name="stop">Stop</string>
+    <string name="toggle_hud">Toggle HUD</string>
+    <string name="open_app">Open PacBench</string>
+</resources>

@@ -1,0 +1,3 @@
+-keepattributes *Annotation*
+-keep class com.demirarch.pacbench.data.PacBenchDatabase_Impl { *; }
+-dontwarn org.bouncycastle.**
