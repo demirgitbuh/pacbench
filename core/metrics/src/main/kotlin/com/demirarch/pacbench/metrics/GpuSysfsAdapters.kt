@@ -125,13 +125,13 @@ class XclipseVendorSysfsAdapter : GpuSysfsAdapter {
         access: SystemFileAccess,
     ): GpuSysfsReading? = paths.firstNotNullOfOrNull { path ->
         val text = access.readText(path).value ?: return@firstNotNullOfOrNull null
-        val value = if (metric == MetricId.GPU_USAGE) {
+        val value = (if (metric == MetricId.GPU_USAGE) {
             SysfsValueParser.percentage(text)
         } else if (path.endsWith("/cur_freq")) {
             SysfsValueParser.frequencyMhzFromHertz(text)
         } else {
             SysfsValueParser.frequencyMhz(text)
-        } ?: return@firstNotNullOfOrNull null
+        }) ?: return@firstNotNullOfOrNull null
         GpuSysfsReading(value, path, name)
     }
 
