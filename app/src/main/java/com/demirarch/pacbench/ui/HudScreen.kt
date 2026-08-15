@@ -39,6 +39,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -56,6 +57,8 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import com.demirarch.pacbench.model.BuiltInHudPresets
 import com.demirarch.pacbench.model.HudAlignment
 import com.demirarch.pacbench.model.HudPreset
@@ -72,6 +75,9 @@ fun HudScreen(viewModel: PacBenchViewModel, modifier: Modifier = Modifier) {
     val recording by viewModel.recording.collectAsStateWithLifecycle()
     val access by viewModel.access.collectAsStateWithLifecycle()
     val activePresetId by viewModel.activeHudPresetId.collectAsStateWithLifecycle()
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let(viewModel::importHudPreset)
+    }
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -83,7 +89,14 @@ fun HudScreen(viewModel: PacBenchViewModel, modifier: Modifier = Modifier) {
                 eyebrow = "Overlay layout",
                 title = "HUD",
                 detail = "Design persisted presets with actual metric identities.",
-                action = { Button(onClick = viewModel::newHudPreset) { Text("New preset") } },
+                action = {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = { importLauncher.launch(arrayOf("application/json", "text/plain")) }) {
+                            Text("Import")
+                        }
+                        Button(onClick = viewModel::newHudPreset) { Text("New preset") }
+                    }
+                },
             )
         }
         item {
@@ -159,6 +172,7 @@ fun HudScreen(viewModel: PacBenchViewModel, modifier: Modifier = Modifier) {
                     active = preset.id == activePresetId,
                     onUse = { viewModel.useHudPreset(preset) },
                     onEdit = { viewModel.openHudPreset(preset) },
+                    onExport = { viewModel.exportHudPreset(preset) },
                     onDelete = { viewModel.deleteHudPreset(preset) },
                 )
             }
@@ -172,6 +186,7 @@ private fun PresetCard(
     active: Boolean,
     onUse: () -> Unit,
     onEdit: () -> Unit,
+    onExport: () -> Unit,
     onDelete: () -> Unit,
 ) {
     val builtIn = BuiltInHudPresets.all.any { it.id == preset.id }
@@ -200,6 +215,7 @@ private fun PresetCard(
                 Button(onClick = onEdit, modifier = Modifier.weight(1f)) {
                     Text(if (builtIn) "Edit a copy" else "Open designer")
                 }
+                OutlinedButton(onClick = onExport) { Text("Export") }
                 if (!builtIn) {
                     OutlinedButton(onClick = onDelete) { Text("Delete") }
                 }
@@ -435,7 +451,7 @@ private fun HudWidgetPreview(widget: HudWidget, latest: MetricSnapshot?, scale: 
             textAlign = alignment,
             color = Color.White.copy(alpha = widget.textOpacity),
             fontSize = (widget.fontSize * scale).coerceIn(8f, 30f).sp,
-            fontWeight = if (widget.fontWeight >= 700) FontWeight.Bold else FontWeight.Medium,
+            fontWeight = if (widget.fontWeight >= 600) FontWeight.Bold else FontWeight.Medium,
             maxLines = if (widget.type == HudWidgetType.MULTI_METRIC_COLUMN) 3 else 1,
             overflow = TextOverflow.Ellipsis,
         )
@@ -528,7 +544,18 @@ private fun PropertyPanel(
             MetricId.entries.forEach { metric ->
                 FilterChip(
                     selected = widget.metrics.firstOrNull() == metric,
-                    onClick = { viewModel.updateSelectedWidget { it.copy(metrics = listOf(metric)) } },
+                    onClick = {
+                        viewModel.updateSelectedWidget {
+                            val multiMetric = it.type == HudWidgetType.MULTI_METRIC_ROW ||
+                                it.type == HudWidgetType.MULTI_METRIC_COLUMN
+                            val metrics = if (multiMetric) {
+                                if (metric in it.metrics && it.metrics.size > 1) it.metrics - metric else it.metrics + metric
+                            } else {
+                                listOf(metric)
+                            }
+                            it.copy(metrics = metrics.distinct())
+                        }
+                    },
                     label = { Text(metric.displayName()) },
                 )
             }
@@ -550,11 +577,24 @@ private fun PropertyPanel(
             "${widget.fontSize.roundToInt()} sp",
         ) { value -> viewModel.updateSelectedWidget { it.copy(fontSize = value) } }
         PropertySlider(
+            "Font weight",
+            widget.fontWeight.toFloat(),
+            100f..900f,
+            widget.fontWeight.toString(),
+            steps = 7,
+        ) { value -> viewModel.updateSelectedWidget { it.copy(fontWeight = value.roundToInt()) } }
+        PropertySlider(
             "Padding",
             widget.padding,
             0f..24f,
             "${widget.padding.roundToInt()}",
         ) { value -> viewModel.updateSelectedWidget { it.copy(padding = value) } }
+        PropertySlider(
+            "Margin",
+            widget.margin,
+            0f..24f,
+            "${widget.margin.roundToInt()}",
+        ) { value -> viewModel.updateSelectedWidget { it.copy(margin = value) } }
         PropertySlider(
             "Corner radius",
             widget.cornerRadius,
@@ -580,6 +620,30 @@ private fun PropertyPanel(
             widget.decimalPrecision.toString(),
             steps = 2,
         ) { value -> viewModel.updateSelectedWidget { it.copy(decimalPrecision = value.roundToInt()) } }
+        OutlinedTextField(
+            value = widget.metricUnit.orEmpty(),
+            onValueChange = { unit -> viewModel.updateSelectedWidget { it.copy(metricUnit = unit.takeIf(String::isNotBlank)) } },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Custom unit") },
+            singleLine = true,
+        )
+        PropertySlider(
+            "Graph history",
+            widget.graphHistorySeconds.toFloat(),
+            5f..120f,
+            "${widget.graphHistorySeconds} s",
+        ) { value -> viewModel.updateSelectedWidget { it.copy(graphHistorySeconds = value.roundToInt()) } }
+        OutlinedTextField(
+            value = widget.warningThreshold?.toString().orEmpty(),
+            onValueChange = { threshold ->
+                viewModel.updateSelectedWidget {
+                    it.copy(warningThreshold = threshold.toDoubleOrNull()?.takeIf(Double::isFinite))
+                }
+            },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Warning threshold") },
+            singleLine = true,
+        )
         Text("Refresh interval", style = MaterialTheme.typography.titleMedium)
         Row(
             modifier = Modifier.horizontalScroll(rememberScrollState()),

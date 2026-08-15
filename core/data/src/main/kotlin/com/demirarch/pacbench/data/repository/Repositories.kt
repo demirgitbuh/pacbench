@@ -31,6 +31,16 @@ interface GameRepository {
 
     suspend fun setFavorite(gameId: Long, favorite: Boolean): Boolean
 
+    suspend fun setCustomName(gameId: Long, customName: String?): Boolean
+
+    suspend fun setAutoMonitoring(gameId: Long, enabled: Boolean): Boolean
+
+    suspend fun setAutoOverlay(gameId: Long, enabled: Boolean): Boolean
+
+    suspend fun setHudPreset(gameId: Long, presetId: String?): Boolean
+
+    suspend fun clearHudPresetAssignments(presetId: String): Int
+
     suspend fun delete(game: Game)
 }
 
@@ -61,6 +71,21 @@ class RoomGameRepository(
 
     override suspend fun setFavorite(gameId: Long, favorite: Boolean): Boolean =
         gameDao.setFavorite(gameId, favorite) == 1
+
+    override suspend fun setCustomName(gameId: Long, customName: String?): Boolean =
+        gameDao.setCustomName(gameId, customName) == 1
+
+    override suspend fun setAutoMonitoring(gameId: Long, enabled: Boolean): Boolean =
+        gameDao.setAutoMonitoring(gameId, enabled) == 1
+
+    override suspend fun setAutoOverlay(gameId: Long, enabled: Boolean): Boolean =
+        gameDao.setAutoOverlay(gameId, enabled) == 1
+
+    override suspend fun setHudPreset(gameId: Long, presetId: String?): Boolean =
+        gameDao.setHudPreset(gameId, presetId) == 1
+
+    override suspend fun clearHudPresetAssignments(presetId: String): Int =
+        gameDao.clearHudPresetAssignments(presetId)
 
     override suspend fun delete(game: Game) = gameDao.delete(game)
 }

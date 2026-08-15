@@ -21,6 +21,7 @@ import com.demirarch.pacbench.access.InterruptedSessionRecovery
 import com.demirarch.pacbench.access.MetricEngineFactory
 import com.demirarch.pacbench.access.MetricEngineHandle
 import com.demirarch.pacbench.data.local.SessionStartRequest
+import com.demirarch.pacbench.data.repository.GameRepository
 import com.demirarch.pacbench.data.repository.HudPresetRepository
 import com.demirarch.pacbench.data.repository.SessionRepository
 import com.demirarch.pacbench.data.settings.PacBenchSettings
@@ -59,6 +60,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 @AndroidEntryPoint
 class MonitoringService : Service() {
     @Inject lateinit var sessionRepository: SessionRepository
+    @Inject lateinit var gameRepository: GameRepository
     @Inject lateinit var settingsRepository: SettingsRepository
     @Inject lateinit var hudPresetRepository: HudPresetRepository
     @Inject lateinit var metricEngineFactory: MetricEngineFactory
@@ -69,6 +71,7 @@ class MonitoringService : Service() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val lifecycleMutex = Mutex()
+    private val commandGeneration = AtomicLong()
     private lateinit var notificationManager: NotificationManager
 
     @Volatile
@@ -76,6 +79,9 @@ class MonitoringService : Service() {
 
     @Volatile
     private var startupJob: Job? = null
+
+    @Volatile
+    private var startupAutomatic = false
 
     override fun onCreate() {
         super.onCreate()
@@ -92,7 +98,8 @@ class MonitoringService : Service() {
         val commandIntent = intent ?: Intent().setAction(ACTION_START_PACKAGE)
         when (commandIntent.action ?: ACTION_START_PACKAGE) {
             ACTION_STOP -> {
-                startupJob?.cancel()
+                commandGeneration.incrementAndGet()
+                cancelStartup()
                 serviceScope.launch {
                     lifecycleMutex.withLock {
                         stopActiveSession(completed = true, reason = "Stopped by user")
@@ -102,24 +109,57 @@ class MonitoringService : Service() {
                     }
                 }
             }
+            ACTION_DISABLE_AUTOMATIC -> {
+                val stopAutomaticWork = startupAutomatic || activeSession?.automatic == true
+                if (stopAutomaticWork) {
+                    commandGeneration.incrementAndGet()
+                    if (startupAutomatic) cancelStartup()
+                }
+                serviceScope.launch {
+                    lifecycleMutex.withLock {
+                        if (activeSession?.automatic == true) {
+                            stopActiveSession(completed = true, reason = "Automatic detection disabled")
+                        }
+                        if (activeSession == null && startupJob == null) {
+                            stateStore.update(MonitoringState.Idle)
+                            stopForeground(STOP_FOREGROUND_REMOVE)
+                            stopSelfResult(startId)
+                        } else {
+                            activeSession?.let(::publishState)
+                        }
+                    }
+                }
+            }
             ACTION_TOGGLE_HUD -> serviceScope.launch {
                 lifecycleMutex.withLock { toggleHud() }
             }
             ACTION_START_AUTOMATIC -> {
+                if (activeSession != null || startupJob != null) {
+                    activeSession?.let {
+                        publishState(it)
+                        updateNotification(it)
+                    }
+                    return START_NOT_STICKY
+                }
+                val generation = commandGeneration.incrementAndGet()
                 startForeground(NOTIFICATION_ID, buildNotification("Looking for a foreground game"))
-                launchStartup {
-                    lifecycleMutex.withLock { startAutomatic(commandIntent, startId) }
+                launchStartup(generation, automatic = true) {
+                    startAutomatic(commandIntent, startId, generation)
                 }
             }
             ACTION_START_PACKAGE -> {
+                val generation = commandGeneration.incrementAndGet()
                 startForeground(NOTIFICATION_ID, buildNotification("Preparing performance monitoring"))
-                launchStartup {
-                    lifecycleMutex.withLock { startExplicit(commandIntent, startId) }
+                launchStartup(generation, automatic = false) {
+                    lifecycleMutex.withLock { startExplicit(commandIntent, startId, generation) }
                 }
             }
             else -> {
+                val generation = commandGeneration.incrementAndGet()
                 startForeground(NOTIFICATION_ID, buildNotification("Unsupported monitoring action"))
-                launchStartup { failAndStop("Unsupported monitoring action", startId) }
+                launchStartup(generation, automatic = false) {
+                    failAndStop("Unsupported monitoring action", startId, generation)
+                }
             }
         }
         return START_NOT_STICKY
@@ -131,6 +171,7 @@ class MonitoringService : Service() {
         overlayController.hide()
         val session = activeSession
         if (session == null) {
+            stateStore.update(MonitoringState.Idle)
             serviceScope.cancel()
         } else {
             serviceScope.launch {
@@ -139,6 +180,7 @@ class MonitoringService : Service() {
                         completed = false,
                         reason = "Monitoring service was destroyed before a clean stop",
                     )
+                    stateStore.update(MonitoringState.Idle)
                 }
                 serviceScope.cancel()
             }
@@ -153,32 +195,93 @@ class MonitoringService : Service() {
                     completed = false,
                     reason = "Foreground service runtime expired",
                 )
+                stateStore.update(MonitoringState.Idle)
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelfResult(startId)
             }
         }
     }
 
-    private suspend fun startExplicit(intent: Intent, startId: Int) {
+    private suspend fun startExplicit(intent: Intent, startId: Int, generation: Long) {
+        if (generation != commandGeneration.get()) return
         val targetPackage = intent.getStringExtra(EXTRA_TARGET_PACKAGE)?.trim().orEmpty()
         stateStore.update(MonitoringState.Starting(targetPackage.takeIf(String::isNotBlank), false))
         val game = resolveInstalledGame(targetPackage, intent.getStringExtra(EXTRA_TARGET_LABEL))
         if (game == null) {
-            failAndStop("Target package is missing, invalid, or not visible", startId)
+            failAndStop("Target package is missing, invalid, or not visible", startId, generation)
             return
         }
-        beginMonitoring(game, intent, startId, automatic = false)
+        beginMonitoring(game, intent, startId, generation, automatic = false)
     }
 
-    private suspend fun startAutomatic(intent: Intent, startId: Int) {
+    private suspend fun startAutomatic(intent: Intent, startId: Int, generation: Long) {
+        if (generation != commandGeneration.get()) return
         stateStore.update(MonitoringState.Starting(null, true))
-        when (val result = foregroundGameDetector.detect()) {
-            is ForegroundGameDetectionResult.Found -> beginMonitoring(result.game, intent, startId, automatic = true)
-            ForegroundGameDetectionResult.UsageAccessRequired ->
-                failAndStop("Usage access is required for automatic game detection", startId)
-            ForegroundGameDetectionResult.TimedOut ->
-                failAndStop("No foreground game was detected before the configured timeout", startId)
-            is ForegroundGameDetectionResult.Unavailable -> failAndStop(result.reason, startId)
+        while (serviceScope.isActive && generation == commandGeneration.get()) {
+            when (val result = foregroundGameDetector.detect()) {
+                is ForegroundGameDetectionResult.Found -> {
+                    val storedGame = withContext(Dispatchers.IO) {
+                        gameRepository.getByPackage(result.game.packageName)
+                    }
+                    if (storedGame == null || storedGame.isArchived || !storedGame.autoMonitoring) {
+                        notificationManager.notify(
+                            NOTIFICATION_ID,
+                            buildNotification("Waiting for an enabled configured game"),
+                        )
+                        continue
+                    }
+                    val resolvedGame = result.game.copy(
+                        displayName = storedGame.customName ?: result.game.displayName,
+                    )
+                    val resolvedIntent = Intent(intent).apply {
+                        putExtra(EXTRA_SHOW_HUD, storedGame.autoOverlay)
+                        putExtra(
+                            EXTRA_HUD_PRESET_ID,
+                            storedGame.selectedHudPresetId
+                                ?: currentActiveHudPresetId()
+                                ?: intent.getStringExtra(EXTRA_HUD_PRESET_ID),
+                        )
+                    }
+                    lifecycleMutex.withLock {
+                        if (generation != commandGeneration.get()) return
+                        val active = activeSession
+                        if (active != null) {
+                            publishState(active)
+                            return
+                        }
+                        beginMonitoring(
+                            game = resolvedGame,
+                            intent = resolvedIntent,
+                            startId = startId,
+                            generation = generation,
+                            automatic = true,
+                            automaticIntent = Intent(intent),
+                        )
+                    }
+                    return
+                }
+                ForegroundGameDetectionResult.UsageAccessRequired -> {
+                    settingsRepository.setAutomaticDetectionEnabled(false)
+                    failAndStop("Usage access is required for automatic game detection", startId, generation)
+                    return
+                }
+                ForegroundGameDetectionResult.TimedOut -> {
+                    if (!settingsRepository.settings.first().automaticDetectionEnabled) {
+                        failAndStop(
+                            "No foreground game was detected before the configured timeout",
+                            startId,
+                            generation,
+                        )
+                        return
+                    }
+                    notificationManager.notify(NOTIFICATION_ID, buildNotification("Waiting for a configured game"))
+                }
+                is ForegroundGameDetectionResult.Unavailable -> {
+                    settingsRepository.setAutomaticDetectionEnabled(false)
+                    failAndStop(result.reason, startId, generation)
+                    return
+                }
+            }
         }
     }
 
@@ -186,10 +289,13 @@ class MonitoringService : Service() {
         game: DetectedGame,
         intent: Intent,
         startId: Int,
+        generation: Long,
         automatic: Boolean,
+        automaticIntent: Intent? = null,
     ) {
         var unownedEngineHandle: MetricEngineHandle? = null
         try {
+            if (generation != commandGeneration.get()) return
             stopActiveSession(completed = true, reason = "Target changed")
             withContext(Dispatchers.IO) {
                 interruptedSessionRecovery.recover(
@@ -207,12 +313,14 @@ class MonitoringService : Service() {
             )
             unownedEngineHandle = engineHandle
             val firstSnapshot = engineHandle.sample(settings.enabledMetrics)
+            if (generation != commandGeneration.get()) throw CancellationException("Monitoring request was superseded")
             val startedAt = firstSnapshot.timestampMillis
             val sessionId = withContext(Dispatchers.IO) {
                 sessionRepository.start(
                     SessionStartRequest(
                         packageName = game.packageName,
                         displayName = game.displayName,
+                        appName = game.appName,
                         versionName = game.versionName,
                         versionCode = game.versionCode,
                         startedAt = startedAt,
@@ -242,6 +350,9 @@ class MonitoringService : Service() {
                 droppedByBuffer = droppedByBuffer,
                 hudRequested = intent.getBooleanExtra(EXTRA_SHOW_HUD, true),
                 automatic = automatic,
+                generation = generation,
+                serviceStartId = startId,
+                automaticIntent = automaticIntent,
             )
             activeSession = session
             unownedEngineHandle = null
@@ -279,31 +390,58 @@ class MonitoringService : Service() {
                     )
                 }
             }
-            failAndStop(error.message ?: "Monitoring could not be started", startId)
+            failAndStop(error.message ?: "Monitoring could not be started", startId, generation)
         }
     }
 
     private suspend fun sampleLoop(session: ActiveSession) {
         var leftTargetAt: Long? = null
+        var configurationEnabled = true
+        var lastConfigurationCheckAt = 0L
         while (serviceScope.isActive && activeSession === session) {
             delay(session.settings.samplingIntervalMillis)
             if (session.automatic) {
+                val now = SystemClock.elapsedRealtime()
+                if (now - lastConfigurationCheckAt >= CONFIGURATION_CHECK_INTERVAL_MILLIS) {
+                    configurationEnabled = withContext(Dispatchers.IO) {
+                        gameRepository.getByPackage(session.game.packageName)
+                            ?.let { !it.isArchived && it.autoMonitoring }
+                            ?: false
+                    }
+                    lastConfigurationCheckAt = now
+                }
                 val foregroundPackage = foregroundGameDetector.currentForegroundPackage()
-                leftTargetAt = if (foregroundPackage == session.game.packageName) {
+                leftTargetAt = if (configurationEnabled && foregroundPackage == session.game.packageName) {
                     null
                 } else {
-                    leftTargetAt ?: SystemClock.elapsedRealtime()
+                    leftTargetAt ?: now
                 }
                 val awayFor = leftTargetAt?.let { SystemClock.elapsedRealtime() - it } ?: 0L
                 if (awayFor >= session.settings.autoDetectionTimeoutMillis) {
                     serviceScope.launch {
-                        lifecycleMutex.withLock {
-                            if (activeSession === session) {
+                        val transitioned = lifecycleMutex.withLock {
+                            if (
+                                activeSession === session &&
+                                commandGeneration.get() == session.generation
+                            ) {
                                 stopActiveSession(completed = true, reason = "Target left foreground")
                                 stateStore.update(MonitoringState.Idle)
-                                stopForeground(STOP_FOREGROUND_REMOVE)
-                                stopSelf()
+                                true
+                            } else {
+                                false
                             }
+                        }
+                        if (!transitioned || commandGeneration.get() != session.generation) return@launch
+                        val keepWatching = settingsRepository.settings.first().automaticDetectionEnabled
+                        if (keepWatching && commandGeneration.get() == session.generation) {
+                            startForeground(NOTIFICATION_ID, buildNotification("Waiting for a configured game"))
+                            val nextIntent = session.automaticIntent ?: startAutomaticIntent(this@MonitoringService)
+                            launchStartup(session.generation, automatic = true) {
+                                startAutomatic(nextIntent, session.serviceStartId, session.generation)
+                            }
+                        } else {
+                            stopForeground(STOP_FOREGROUND_REMOVE)
+                            stopSelf()
                         }
                     }
                     return
@@ -475,22 +613,30 @@ class MonitoringService : Service() {
                 packageName,
                 PackageManager.PackageInfoFlags.of(0),
             )
+            val appName = packageManager.getApplicationLabel(applicationInfo).toString()
+                .takeIf(String::isNotBlank)
+                ?: packageName
             DetectedGame(
                 packageName = packageName,
                 displayName = suppliedLabel?.trim()?.takeIf(String::isNotBlank)
-                    ?: packageManager.getApplicationLabel(applicationInfo).toString()
-                        .takeIf(String::isNotBlank)
-                    ?: packageName,
+                    ?: appName,
+                appName = appName,
                 versionName = packageInfo.versionName,
                 versionCode = packageInfo.longVersionCode,
             )
         }.getOrNull()
     }
 
-    private suspend fun failAndStop(reason: String, startId: Int) {
+    private fun currentActiveHudPresetId(): String? = getSharedPreferences(UI_PREFERENCES, MODE_PRIVATE)
+        .getString(ACTIVE_HUD_PRESET, null)
+        ?.takeIf(String::isNotBlank)
+
+    private suspend fun failAndStop(reason: String, startId: Int, generation: Long) {
+        if (generation != commandGeneration.get()) return
         stateStore.update(MonitoringState.Failed(reason))
         notificationManager.notify(NOTIFICATION_ID, buildNotification(reason))
         delay(FAILURE_NOTIFICATION_MILLIS)
+        if (generation != commandGeneration.get()) return
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelfResult(startId)
     }
@@ -508,13 +654,28 @@ class MonitoringService : Service() {
         )
     }
 
-    private fun launchStartup(block: suspend () -> Unit) {
+    @Synchronized
+    private fun launchStartup(generation: Long, automatic: Boolean, block: suspend () -> Unit) {
+        if (generation != commandGeneration.get()) return
         startupJob?.cancel()
         val job = serviceScope.launch { block() }
         startupJob = job
+        startupAutomatic = automatic
         job.invokeOnCompletion {
-            if (startupJob === job) startupJob = null
+            synchronized(this) {
+                if (startupJob === job) {
+                    startupJob = null
+                    startupAutomatic = false
+                }
+            }
         }
+    }
+
+    @Synchronized
+    private fun cancelStartup() {
+        startupJob?.cancel()
+        startupJob = null
+        startupAutomatic = false
     }
 
     private fun updateNotification(session: ActiveSession) {
@@ -573,6 +734,9 @@ class MonitoringService : Service() {
         val droppedByBuffer: AtomicLong,
         @Volatile var hudRequested: Boolean,
         val automatic: Boolean,
+        val generation: Long,
+        val serviceStartId: Int,
+        val automaticIntent: Intent?,
     ) {
         val acceptedSamples = AtomicLong()
         val persistedSamples = AtomicLong()
@@ -589,6 +753,7 @@ class MonitoringService : Service() {
     companion object {
         const val ACTION_START_PACKAGE = "com.demirarch.pacbench.action.START_PACKAGE_MONITORING"
         const val ACTION_START_AUTOMATIC = "com.demirarch.pacbench.action.START_AUTOMATIC_MONITORING"
+        const val ACTION_DISABLE_AUTOMATIC = "com.demirarch.pacbench.action.DISABLE_AUTOMATIC_MONITORING"
         const val ACTION_TOGGLE_HUD = "com.demirarch.pacbench.action.TOGGLE_HUD"
         const val ACTION_STOP = "com.demirarch.pacbench.action.STOP_MONITORING"
 
@@ -634,8 +799,16 @@ class MonitoringService : Service() {
             )
         }
 
-        fun startAutomaticDetection(context: Context, showHud: Boolean = true) {
-            ContextCompat.startForegroundService(context, startAutomaticIntent(context, showHud))
+        fun startAutomaticDetection(
+            context: Context,
+            showHud: Boolean = true,
+            hudPresetId: String? = null,
+        ) {
+            ContextCompat.startForegroundService(context, startAutomaticIntent(context, showHud, hudPresetId))
+        }
+
+        fun disableAutomaticDetection(context: Context) {
+            context.startService(Intent(context, MonitoringService::class.java).setAction(ACTION_DISABLE_AUTOMATIC))
         }
 
         fun stop(context: Context) {
@@ -653,6 +826,9 @@ class MonitoringService : Service() {
         private const val BATCH_WRITE_ATTEMPTS = 2
         private const val BATCH_RETRY_DELAY_MILLIS = 250L
         private const val FAILURE_NOTIFICATION_MILLIS = 1_500L
+        private const val CONFIGURATION_CHECK_INTERVAL_MILLIS = 5_000L
         private const val DEFAULT_HUD_PRESET_ID = "benchmark"
+        private const val UI_PREFERENCES = "pacbench_ui"
+        private const val ACTIVE_HUD_PRESET = "active_hud_preset"
     }
 }

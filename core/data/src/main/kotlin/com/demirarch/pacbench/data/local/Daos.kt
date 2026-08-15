@@ -1,7 +1,6 @@
 package com.demirarch.pacbench.data.local
 
 import androidx.room.Dao
-import androidx.room.Delete
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
@@ -17,7 +16,8 @@ abstract class GameDao {
     @Query(
         """
         SELECT * FROM games
-        WHERE (:query = '' OR display_name LIKE '%' || :query || '%' COLLATE NOCASE
+        WHERE is_archived = 0
+            AND (:query = '' OR display_name LIKE '%' || :query || '%' COLLATE NOCASE
             OR package_name LIKE '%' || :query || '%' COLLATE NOCASE)
             AND (:favoriteOnly = 0 OR is_favorite = 1)
         ORDER BY is_favorite DESC, COALESCE(last_played_at, 0) DESC, display_name COLLATE NOCASE
@@ -51,12 +51,22 @@ abstract class GameDao {
             upsertEntity(
                 game.copy(
                     id = existing.id,
+                    displayName = if (game.id == 0L) existing.customName ?: game.displayName else game.displayName,
+                    appName = game.appName.ifBlank { existing.appName },
+                    customName = if (game.id == 0L) existing.customName else game.customName,
+                    iconReference = if (game.id == 0L) existing.iconReference else game.iconReference,
                     versionName = game.versionName ?: existing.versionName,
                     versionCode = game.versionCode ?: existing.versionCode,
                     isFavorite = if (game.id == 0L) existing.isFavorite else game.isFavorite,
                     firstSeenAt = minOf(existing.firstSeenAt, game.firstSeenAt),
+                    addedAt = minOf(existing.addedAt, game.addedAt),
                     lastSeenAt = maxOf(existing.lastSeenAt, game.lastSeenAt),
                     lastPlayedAt = listOfNotNull(existing.lastPlayedAt, game.lastPlayedAt).maxOrNull(),
+                    launchConfiguration = if (game.id == 0L) existing.launchConfiguration else game.launchConfiguration,
+                    selectedHudPresetId = if (game.id == 0L) existing.selectedHudPresetId else game.selectedHudPresetId,
+                    autoMonitoring = if (game.id == 0L) existing.autoMonitoring else game.autoMonitoring,
+                    autoOverlay = if (game.id == 0L) existing.autoOverlay else game.autoOverlay,
+                    isArchived = if (game.id == 0L) false else existing.isArchived,
                 ),
             )
             return existing.id
@@ -70,8 +80,27 @@ abstract class GameDao {
     @Query("UPDATE games SET is_favorite = :favorite WHERE id = :gameId")
     abstract suspend fun setFavorite(gameId: Long, favorite: Boolean): Int
 
-    @Delete
-    abstract suspend fun delete(game: Game)
+    @Query("UPDATE games SET custom_name = :customName, display_name = COALESCE(:customName, app_name) WHERE id = :gameId")
+    abstract suspend fun setCustomName(gameId: Long, customName: String?): Int
+
+    @Query("UPDATE games SET auto_monitoring = :enabled WHERE id = :gameId")
+    abstract suspend fun setAutoMonitoring(gameId: Long, enabled: Boolean): Int
+
+    @Query("UPDATE games SET auto_overlay = :enabled WHERE id = :gameId")
+    abstract suspend fun setAutoOverlay(gameId: Long, enabled: Boolean): Int
+
+    @Query("UPDATE games SET selected_hud_preset_id = :presetId WHERE id = :gameId")
+    abstract suspend fun setHudPreset(gameId: Long, presetId: String?): Int
+
+    @Query("UPDATE games SET selected_hud_preset_id = NULL WHERE selected_hud_preset_id = :presetId")
+    abstract suspend fun clearHudPresetAssignments(presetId: String): Int
+
+    @Query("UPDATE games SET is_archived = 1 WHERE id = :gameId")
+    protected abstract suspend fun archive(gameId: Long): Int
+
+    open suspend fun delete(game: Game) {
+        check(archive(game.id) == 1) { "Game ${game.id} does not exist" }
+    }
 
     @Query(
         """
@@ -109,7 +138,8 @@ abstract class GameDao {
                 WHERE s.game_id = g.id) AS peakGpuTemp,
             (SELECT MAX(s.started_at) FROM performance_sessions s WHERE s.game_id = g.id) AS lastSessionAt
         FROM games g
-        WHERE (:query = '' OR g.display_name LIKE '%' || :query || '%' COLLATE NOCASE
+        WHERE g.is_archived = 0
+            AND (:query = '' OR g.display_name LIKE '%' || :query || '%' COLLATE NOCASE
             OR g.package_name LIKE '%' || :query || '%' COLLATE NOCASE)
         ORDER BY COALESCE(lastSessionAt, 0) DESC, g.display_name COLLATE NOCASE
         """,
@@ -165,7 +195,20 @@ abstract class PerformanceSessionDao {
         SELECT s.*,
             g.package_name AS game_package_name,
             g.display_name AS game_display_name,
-            (SELECT COUNT(*) FROM performance_samples p WHERE p.session_id = s.id) AS sample_count
+            (SELECT COUNT(*) FROM performance_samples p WHERE p.session_id = s.id) AS sample_count,
+            COALESCE(s.average_fps,
+                (SELECT AVG(p.fps) FROM performance_samples p WHERE p.session_id = s.id)
+            ) AS effective_average_fps,
+            (SELECT MAX(value) FROM (
+                SELECT MAX(p.cpu_temp) AS value FROM performance_samples p WHERE p.session_id = s.id
+                UNION ALL
+                SELECT MAX(p.gpu_temp) AS value FROM performance_samples p WHERE p.session_id = s.id
+                UNION ALL
+                SELECT MAX(p.battery_temp) AS value FROM performance_samples p WHERE p.session_id = s.id
+            )) AS effective_max_temperature,
+            COALESCE(s.duration_millis,
+                MAX(COALESCE(s.ended_at, CAST(strftime('%s', 'now') AS INTEGER) * 1000) - s.started_at, 0)
+            ) AS effective_duration_millis
         FROM performance_sessions s
         INNER JOIN games g ON g.id = s.game_id
         WHERE (:query = '' OR g.display_name LIKE '%' || :query || '%' COLLATE NOCASE
@@ -228,6 +271,7 @@ abstract class PerformanceSessionDao {
             Game(
                 packageName = request.packageName,
                 displayName = request.displayName,
+                appName = request.appName,
                 versionName = request.versionName,
                 versionCode = request.versionCode,
                 firstSeenAt = request.startedAt,
@@ -243,6 +287,7 @@ abstract class PerformanceSessionDao {
         updateGameForSession(
             gameId = gameId,
             displayName = request.displayName,
+            appName = request.appName,
             versionName = request.versionName,
             versionCode = request.versionCode,
             observedAt = request.startedAt,
@@ -335,17 +380,20 @@ abstract class PerformanceSessionDao {
     @Query(
         """
         UPDATE games SET
-            display_name = :displayName,
+            app_name = :appName,
+            display_name = COALESCE(custom_name, :displayName),
             version_name = COALESCE(:versionName, version_name),
             version_code = COALESCE(:versionCode, version_code),
             last_seen_at = MAX(last_seen_at, :observedAt),
-            last_played_at = MAX(COALESCE(last_played_at, :observedAt), :observedAt)
+            last_played_at = MAX(COALESCE(last_played_at, :observedAt), :observedAt),
+            is_archived = 0
         WHERE id = :gameId
         """,
     )
     protected abstract suspend fun updateGameForSession(
         gameId: Long,
         displayName: String,
+        appName: String,
         versionName: String?,
         versionCode: Long?,
         observedAt: Long,
@@ -372,6 +420,13 @@ abstract class PerformanceSessionDao {
                 ELSE MAX(started_at, MIN(:recoveredAt,
                     (SELECT MAX(p.timestamp) FROM performance_samples p
                         WHERE p.session_id = performance_sessions.id)))
+            END,
+            duration_millis = CASE
+                WHEN (SELECT MAX(p.timestamp) FROM performance_samples p
+                    WHERE p.session_id = performance_sessions.id) IS NULL THEN 0
+                ELSE MAX(0, MIN(:recoveredAt,
+                    (SELECT MAX(p.timestamp) FROM performance_samples p
+                        WHERE p.session_id = performance_sessions.id)) - started_at)
             END,
             status = 'INTERRUPTED',
             data_quality_summary = CASE

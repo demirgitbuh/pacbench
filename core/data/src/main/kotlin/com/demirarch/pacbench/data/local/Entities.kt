@@ -21,7 +21,7 @@ data class Game(
     val packageName: String,
     @ColumnInfo(name = "display_name")
     val displayName: String,
-    @ColumnInfo(name = "app_name")
+    @ColumnInfo(name = "app_name", defaultValue = "''")
     val appName: String = displayName,
     @ColumnInfo(name = "custom_name")
     val customName: String? = null,
@@ -35,7 +35,7 @@ data class Game(
     val isFavorite: Boolean = false,
     @ColumnInfo(name = "first_seen_at")
     val firstSeenAt: Long,
-    @ColumnInfo(name = "added_at")
+    @ColumnInfo(name = "added_at", defaultValue = "0")
     val addedAt: Long = firstSeenAt,
     @ColumnInfo(name = "last_seen_at")
     val lastSeenAt: Long,
@@ -45,10 +45,12 @@ data class Game(
     val launchConfiguration: String? = null,
     @ColumnInfo(name = "selected_hud_preset_id")
     val selectedHudPresetId: String? = null,
-    @ColumnInfo(name = "auto_monitoring")
+    @ColumnInfo(name = "auto_monitoring", defaultValue = "1")
     val autoMonitoring: Boolean = true,
-    @ColumnInfo(name = "auto_overlay")
+    @ColumnInfo(name = "auto_overlay", defaultValue = "1")
     val autoOverlay: Boolean = true,
+    @ColumnInfo(name = "is_archived", defaultValue = "0")
+    val isArchived: Boolean = false,
 )
 
 enum class SessionStatus {
@@ -125,9 +127,9 @@ data class PerformanceSession(
     val batteryStart: Double? = null,
     @ColumnInfo(name = "battery_end")
     val batteryEnd: Double? = null,
-    @ColumnInfo(name = "thermal_event_count")
+    @ColumnInfo(name = "thermal_event_count", defaultValue = "0")
     val thermalEventCount: Int = 0,
-    @ColumnInfo(name = "is_favorite")
+    @ColumnInfo(name = "is_favorite", defaultValue = "0")
     val isFavorite: Boolean = false,
     val notes: String? = null,
 )
@@ -233,6 +235,12 @@ data class SessionListItem(
     val gameDisplayName: String,
     @ColumnInfo(name = "sample_count")
     val sampleCount: Long,
+    @ColumnInfo(name = "effective_average_fps")
+    val effectiveAverageFps: Double?,
+    @ColumnInfo(name = "effective_max_temperature")
+    val effectiveMaxTemperature: Double?,
+    @ColumnInfo(name = "effective_duration_millis")
+    val effectiveDurationMillis: Long,
 )
 
 data class GameAggregateStats(
@@ -255,6 +263,7 @@ data class GameAggregateStats(
 data class SessionStartRequest(
     val packageName: String,
     val displayName: String,
+    val appName: String = displayName,
     val versionName: String? = null,
     val versionCode: Long? = null,
     val startedAt: Long,

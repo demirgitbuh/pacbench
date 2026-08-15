@@ -19,6 +19,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 data class DetectedGame(
     val packageName: String,
     val displayName: String,
+    val appName: String = displayName,
     val versionName: String?,
     val versionCode: Long?,
 )
@@ -41,6 +42,8 @@ class ForegroundGameDetector @Inject constructor(
     private val usageStatsManager = appContext.getSystemService(UsageStatsManager::class.java)
     private val appOpsManager = appContext.getSystemService(AppOpsManager::class.java)
     private val packageManager = appContext.packageManager
+    private var lastForegroundEventAt = 0L
+    private var lastKnownForegroundPackage: String? = null
 
     suspend fun detect(
         knownGamePackages: Set<String> = emptySet(),
@@ -90,25 +93,32 @@ class ForegroundGameDetector @Inject constructor(
         return usageStatsManager?.let { foregroundPackage(it, MIN_EVENT_LOOKBACK_MILLIS) }
     }
 
+    @Synchronized
     private fun foregroundPackage(manager: UsageStatsManager, timeoutMillis: Long): String? {
         val end = System.currentTimeMillis()
-        val begin = end - maxOf(MIN_EVENT_LOOKBACK_MILLIS, timeoutMillis)
-        val events = runCatching { manager.queryEvents(begin, end) }.getOrNull() ?: return null
+        val begin = if (lastForegroundEventAt == 0L) {
+            end - maxOf(INITIAL_EVENT_LOOKBACK_MILLIS, timeoutMillis)
+        } else {
+            maxOf(lastForegroundEventAt - 1L, end - maxOf(MIN_EVENT_LOOKBACK_MILLIS, timeoutMillis))
+        }
+        val events = runCatching { manager.queryEvents(begin, end) }.getOrNull()
+            ?: return lastKnownForegroundPackage
         val event = UsageEvents.Event()
-        var currentPackage: String? = null
         while (events.hasNextEvent()) {
             events.getNextEvent(event)
             val packageName = event.packageName?.takeIf(String::isNotBlank) ?: continue
+            if (event.timeStamp < lastForegroundEventAt) continue
             when (event.eventType) {
                 UsageEvents.Event.ACTIVITY_RESUMED,
                 UsageEvents.Event.MOVE_TO_FOREGROUND,
-                -> currentPackage = packageName
+                -> lastKnownForegroundPackage = packageName
                 UsageEvents.Event.MOVE_TO_BACKGROUND -> {
-                    if (currentPackage == packageName) currentPackage = null
+                    if (lastKnownForegroundPackage == packageName) lastKnownForegroundPackage = null
                 }
             }
+            lastForegroundEventAt = maxOf(lastForegroundEventAt, event.timeStamp)
         }
-        return currentPackage
+        return lastKnownForegroundPackage
     }
 
     private fun resolveGame(packageName: String, knownGamePackages: Set<String>): DetectedGame? {
@@ -138,5 +148,6 @@ class ForegroundGameDetector @Inject constructor(
     private companion object {
         const val POLL_INTERVAL_MILLIS = 500L
         const val MIN_EVENT_LOOKBACK_MILLIS = 60_000L
+        const val INITIAL_EVENT_LOOKBACK_MILLIS = 24L * 60 * 60 * 1_000
     }
 }

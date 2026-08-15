@@ -113,6 +113,13 @@ fun SettingsScreen(
                     label = { "${it / 1_000}s" },
                     onSelect = viewModel::setAutoDetectionTimeout,
                 )
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Automatic session detection", style = MaterialTheme.typography.titleMedium)
+                        Text("Keeps the user-started foreground watcher active between configured games", style = MaterialTheme.typography.bodySmall)
+                    }
+                    Switch(settings.automaticDetectionEnabled, viewModel::setAutomaticDetection)
+                }
                 Text("Default graph context", style = MaterialTheme.typography.titleMedium)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     GraphMode.entries.forEach { mode ->

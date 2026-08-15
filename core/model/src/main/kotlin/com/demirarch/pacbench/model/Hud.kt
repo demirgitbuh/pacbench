@@ -50,10 +50,19 @@ data class HudWidget(
     val layer: Int = 0,
 ) {
     init {
-        require(width > 0 && height > 0)
-        require(decimalPrecision in 0..3)
+        require(id.isNotBlank()) { "Widget ID must not be blank" }
+        require(x.isFinite() && y.isFinite() && x >= 0f && y >= 0f) { "Widget position is invalid" }
+        require(width.isFinite() && height.isFinite() && width > 0f && height > 0f) { "Widget size is invalid" }
+        require(fontSize.isFinite() && fontSize in 6f..96f) { "Widget font size is invalid" }
+        require(fontWeight in 100..900) { "Widget font weight is invalid" }
+        require(padding.isFinite() && padding in 0f..96f) { "Widget padding is invalid" }
+        require(margin.isFinite() && margin in 0f..96f) { "Widget margin is invalid" }
+        require(cornerRadius.isFinite() && cornerRadius in 0f..256f) { "Widget corner radius is invalid" }
+        require(decimalPrecision in 0..3) { "Widget decimal precision is invalid" }
         require(backgroundOpacity in 0f..1f && textOpacity in 0f..1f)
-        require(refreshIntervalMillis >= 100)
+        require(refreshIntervalMillis in 100L..60_000L) { "Widget refresh interval is invalid" }
+        require(graphHistorySeconds in 1..600) { "Widget graph history is invalid" }
+        require(warningThreshold == null || warningThreshold.isFinite()) { "Widget warning threshold is invalid" }
     }
 }
 
@@ -68,7 +77,20 @@ data class HudPreset(
     val gridSize: Float = 8f,
     val showSafeArea: Boolean = true,
     val lockedByDefault: Boolean = true,
-)
+) {
+    init {
+        require(schemaVersion == 1) { "Unsupported HUD schema $schemaVersion" }
+        require(id.isNotBlank()) { "Preset ID must not be blank" }
+        require(canvasWidth.isFinite() && canvasWidth in 64f..10_000f) { "Canvas width is invalid" }
+        require(canvasHeight.isFinite() && canvasHeight in 64f..10_000f) { "Canvas height is invalid" }
+        require(gridSize.isFinite() && gridSize in 1f..256f) { "Grid size is invalid" }
+        require(widgets.size <= 200) { "HUD contains too many widgets" }
+        require(widgets.map(HudWidget::id).distinct().size == widgets.size) { "Widget IDs must be unique" }
+        require(widgets.all { it.x + it.width <= canvasWidth && it.y + it.height <= canvasHeight }) {
+            "Widget bounds exceed the HUD canvas"
+        }
+    }
+}
 
 object BuiltInHudPresets {
     val all: List<HudPreset> = listOf(

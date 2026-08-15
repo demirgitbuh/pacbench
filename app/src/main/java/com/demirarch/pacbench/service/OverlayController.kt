@@ -157,6 +157,10 @@ private class HudOverlayView(
         style = Paint.Style.STROKE
         strokeWidth = 2f * density
     }
+    private val accentPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.rgb(255, 122, 0)
+        style = Paint.Style.FILL
+    }
     private val graphPath = Path()
     private val histories = mutableMapOf<MetricId, ArrayDeque<TimedValue>>()
     private var snapshot = initialSnapshot
@@ -186,10 +190,13 @@ private class HudOverlayView(
     }
 
     private fun drawWidget(canvas: Canvas, widget: HudWidget, scale: Float) {
-        val left = widget.x * scale
-        val top = widget.y * scale
-        val right = (left + widget.width * scale).coerceAtMost(width.toFloat())
-        val bottom = (top + widget.height * scale).coerceAtMost(height.toFloat())
+        if (widget.type == HudWidgetType.SPACER) return
+        val maximumMargin = (min(widget.width, widget.height) * scale / 2f - 1f).coerceAtLeast(0f)
+        val margin = (widget.margin * scale).coerceAtMost(maximumMargin)
+        val left = widget.x * scale + margin
+        val top = widget.y * scale + margin
+        val right = ((widget.x + widget.width) * scale - margin).coerceAtMost(width.toFloat())
+        val bottom = ((widget.y + widget.height) * scale - margin).coerceAtMost(height.toFloat())
         if (right <= left || bottom <= top) return
 
         backgroundPaint.color = Color.argb(
@@ -209,6 +216,11 @@ private class HudOverlayView(
             backgroundPaint,
         )
 
+        if (widget.type == HudWidgetType.DIVIDER) {
+            canvas.drawRect(left, (top + bottom) / 2f, right, (top + bottom) / 2f + density, accentPaint)
+            return
+        }
+
         val padding = widget.padding * scale
         val contentLeft = left + padding
         val contentRight = right - padding
@@ -224,17 +236,57 @@ private class HudOverlayView(
         val readings = widget.metrics.ifEmpty { listOf(MetricId.FPS) }
         val lineHeight = textPaint.fontSpacing.coerceAtLeast(1f)
         readings.forEachIndexed { index, metric ->
-            val y = contentTop - textPaint.fontMetrics.top + index * lineHeight
+            val rowMode = widget.type == HudWidgetType.MULTI_METRIC_ROW
+            val x = if (rowMode) contentLeft + (contentRight - contentLeft) * index / readings.size else contentLeft
+            val y = contentTop - textPaint.fontMetrics.top + if (rowMode) 0f else index * lineHeight
             if (y > bottom - padding) return@forEachIndexed
-            val text = formatReading(metric, snapshot[metric], widget)
-            val availableWidth = (contentRight - contentLeft).coerceAtLeast(0f)
+            val reading = snapshot[metric]
+            val threshold = widget.warningThreshold
+            val readingValue = reading?.value
+            textPaint.color = if (
+                threshold != null && reading?.status == MetricStatus.AVAILABLE &&
+                readingValue != null && readingValue >= threshold
+            ) {
+                Color.rgb(255, 102, 102)
+            } else {
+                Color.argb((widget.textOpacity * 255).toInt(), 245, 248, 250)
+            }
+            val text = formatReading(metric, reading, widget)
+            val availableWidth = if (rowMode) {
+                ((contentRight - contentLeft) / readings.size - padding).coerceAtLeast(0f)
+            } else {
+                (contentRight - contentLeft).coerceAtLeast(0f)
+            }
             val clipped = TextUtils.ellipsize(text, textPaint, availableWidth, TextUtils.TruncateAt.END)
-            canvas.drawText(clipped, 0, clipped.length, contentLeft, y, textPaint)
+            canvas.drawText(clipped, 0, clipped.length, x, y, textPaint)
+        }
+
+        if (widget.type == HudWidgetType.HORIZONTAL_BAR || widget.type == HudWidgetType.VERTICAL_BAR) {
+            val metric = readings.first()
+            val maximum = barMaximum(metric)
+            val value = snapshot[metric]?.value?.coerceIn(0.0, maximum) ?: return
+            val fraction = (value / maximum).toFloat()
+            if (widget.type == HudWidgetType.HORIZONTAL_BAR) {
+                val barTop = bottom - padding - 4f * density
+                canvas.drawRoundRect(contentLeft, barTop, contentLeft + (contentRight - contentLeft) * fraction, bottom - padding, 2f * density, 2f * density, accentPaint)
+            } else {
+                val barLeft = right - padding - 5f * density
+                val barTop = bottom - padding - (bottom - contentTop - padding) * fraction
+                canvas.drawRoundRect(barLeft, barTop, right - padding, bottom - padding, 2f * density, 2f * density, accentPaint)
+            }
         }
 
         if (widget.type == HudWidgetType.MINI_GRAPH || widget.type == HudWidgetType.FRAMETIME_GRAPH) {
             widget.metrics.firstOrNull()?.let { metric ->
-                drawGraph(canvas, metric, contentLeft, contentRight, top + (bottom - top) * 0.58f, bottom - padding)
+                drawGraph(
+                    canvas,
+                    metric,
+                    widget.graphHistorySeconds,
+                    contentLeft,
+                    contentRight,
+                    top + (bottom - top) * 0.58f,
+                    bottom - padding,
+                )
             }
         }
     }
@@ -242,19 +294,27 @@ private class HudOverlayView(
     private fun drawGraph(
         canvas: Canvas,
         metric: MetricId,
+        historySeconds: Int,
         left: Float,
         right: Float,
         top: Float,
         bottom: Float,
     ) {
-        val values = histories[metric]?.toList().orEmpty()
+        val cutoff = snapshot.timestampMillis - historySeconds * 1_000L
+        val values = histories[metric]?.filter { it.timestampMillis >= cutoff }.orEmpty()
         if (values.size < 2 || right <= left || bottom <= top) return
         val minimum = values.minOf { it.value }
         val maximum = values.maxOf { it.value }
         val range = (maximum - minimum).takeIf { it > 0.0 }
         graphPath.reset()
+        val duration = (values.last().timestampMillis - values.first().timestampMillis).coerceAtLeast(1L)
         values.forEachIndexed { index, timedValue ->
-            val x = left + (right - left) * index / values.lastIndex.toFloat()
+            val x = if (duration == 1L && values.size > 1) {
+                left + (right - left) * index / values.lastIndex.toFloat()
+            } else {
+                left + (right - left) *
+                    (timedValue.timestampMillis - values.first().timestampMillis).toFloat() / duration.toFloat()
+            }
             val normalized = range?.let { (timedValue.value - minimum) / it } ?: 0.5
             val y = bottom - (bottom - top) * normalized.toFloat()
             if (index == 0) graphPath.moveTo(x, y) else graphPath.lineTo(x, y)
@@ -277,7 +337,11 @@ private class HudOverlayView(
     }
 
     private fun record(value: MetricSnapshot) {
-        val longestHistoryMillis = preset.widgets.maxOfOrNull { it.graphHistorySeconds }?.times(1_000L) ?: 30_000L
+        val longestHistoryMillis = preset.widgets
+            .filter { it.type == HudWidgetType.MINI_GRAPH || it.type == HudWidgetType.FRAMETIME_GRAPH }
+            .maxOfOrNull { it.graphHistorySeconds }
+            ?.times(1_000L)
+            ?: 30_000L
         value.readings.forEach { reading ->
             val metricValue = reading.value
             if (reading.status == MetricStatus.AVAILABLE && metricValue != null && metricValue.isFinite()) {
@@ -294,7 +358,22 @@ private class HudOverlayView(
 
     private data class TimedValue(val timestampMillis: Long, val value: Double)
 
+    private fun barMaximum(metric: MetricId): Double = when (metric) {
+        MetricId.CPU_USAGE, MetricId.GPU_USAGE, MetricId.BATTERY_LEVEL -> 100.0
+        MetricId.FPS -> 240.0
+        MetricId.FRAME_TIME, MetricId.CPU_TEMPERATURE, MetricId.GPU_TEMPERATURE,
+        MetricId.BATTERY_TEMPERATURE, MetricId.PING,
+        -> 120.0
+        MetricId.THERMAL_STATUS -> 6.0
+        MetricId.VOLTAGE -> 5.0
+        MetricId.POWER -> 30.0
+        MetricId.CPU_FREQUENCY, MetricId.GPU_FREQUENCY -> 5_000.0
+        MetricId.CURRENT -> 10.0
+        MetricId.RAM_USED, MetricId.RAM_AVAILABLE -> 16.0
+        MetricId.DOWNLOAD_RATE, MetricId.UPLOAD_RATE -> 1_000.0
+    }
+
     private companion object {
-        const val MAX_HISTORY_POINTS = 600
+        const val MAX_HISTORY_POINTS = 6_000
     }
 }

@@ -31,6 +31,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -41,6 +42,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.demirarch.pacbench.data.local.SessionListItem
 import com.demirarch.pacbench.data.local.SessionStatus
 import com.demirarch.pacbench.export.SessionExportFormat
+import com.demirarch.pacbench.model.AccessMode
 import com.demirarch.pacbench.model.AnalysisFinding
 import com.demirarch.pacbench.model.Confidence
 import com.demirarch.pacbench.model.MetricCalculations
@@ -51,6 +53,12 @@ import java.util.Locale
 
 @Composable
 fun ReportsScreen(viewModel: PacBenchViewModel, modifier: Modifier = Modifier) {
+    var accessFilterName by rememberSaveable { mutableStateOf<String?>(null) }
+    var minimumFps by rememberSaveable { mutableStateOf<Double?>(null) }
+    var maximumTemperature by rememberSaveable { mutableStateOf<Double?>(null) }
+    var minimumDurationMinutes by rememberSaveable { mutableIntStateOf(0) }
+    var newestFirst by rememberSaveable { mutableStateOf(true) }
+    val accessFilter = accessFilterName?.let { name -> AccessMode.entries.firstOrNull { it.name == name } }
     val selected by viewModel.selectedSession.collectAsStateWithLifecycle()
     if (selected != null) {
         SessionDetailScreen(
@@ -69,6 +77,22 @@ fun ReportsScreen(viewModel: PacBenchViewModel, modifier: Modifier = Modifier) {
     val range by viewModel.reportRange.collectAsStateWithLifecycle()
     val comparisonIds by viewModel.comparisonIds.collectAsStateWithLifecycle()
     val comparison by viewModel.comparisonSessions.collectAsStateWithLifecycle()
+    val visibleSessions = remember(
+        sessions,
+        accessFilter,
+        minimumFps,
+        maximumTemperature,
+        minimumDurationMinutes,
+        newestFirst,
+    ) {
+        sessions.asSequence()
+            .filter { accessFilter == null || it.session.accessMode == accessFilter }
+            .filter { minimumFps == null || (it.effectiveAverageFps ?: Double.NEGATIVE_INFINITY) >= minimumFps!! }
+            .filter { maximumTemperature == null || it.effectiveMaxTemperature?.let { value -> value <= maximumTemperature!! } == true }
+            .filter { it.effectiveDurationMillis >= minimumDurationMinutes * 60_000L }
+            .let { sequence -> if (newestFirst) sequence.sortedByDescending { it.session.startedAt } else sequence.sortedBy { it.session.startedAt } }
+            .toList()
+    }
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -118,6 +142,36 @@ fun ReportsScreen(viewModel: PacBenchViewModel, modifier: Modifier = Modifier) {
                         )
                     }
                 }
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    FilterChip(accessFilter == null, { accessFilterName = null }, label = { Text("Any access") })
+                    AccessMode.entries.forEach { mode ->
+                        FilterChip(accessFilter == mode, { accessFilterName = mode.name }, label = { Text(mode.name) })
+                    }
+                }
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    listOf<Double?>(null, 30.0, 60.0, 90.0).forEach { value ->
+                        FilterChip(minimumFps == value, { minimumFps = value }, label = { Text(value?.let { "Average FPS >= ${it.toInt()}" } ?: "Any FPS") })
+                    }
+                    listOf<Double?>(null, 60.0, 70.0, 80.0).forEach { value ->
+                        FilterChip(maximumTemperature == value, { maximumTemperature = value }, label = { Text(value?.let { "Temp <= ${it.toInt()}C" } ?: "Any temp") })
+                    }
+                }
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    listOf(0, 5, 15, 30).forEach { minutes ->
+                        FilterChip(minimumDurationMinutes == minutes, { minimumDurationMinutes = minutes }, label = { Text(if (minutes == 0) "Any duration" else ">= $minutes min") })
+                    }
+                    FilterChip(newestFirst, { newestFirst = true }, label = { Text("Newest") })
+                    FilterChip(!newestFirst, { newestFirst = false }, label = { Text("Oldest") })
+                }
             }
         }
         if (comparisonIds.isNotEmpty()) {
@@ -125,7 +179,7 @@ fun ReportsScreen(viewModel: PacBenchViewModel, modifier: Modifier = Modifier) {
                 ComparisonPanel(comparison, onClear = viewModel::clearComparison)
             }
         }
-        if (sessions.isEmpty()) {
+        if (visibleSessions.isEmpty()) {
             item {
                 EmptyState(
                     title = "No matching sessions",
@@ -133,7 +187,7 @@ fun ReportsScreen(viewModel: PacBenchViewModel, modifier: Modifier = Modifier) {
                 )
             }
         } else {
-            items(sessions, key = { it.session.id }) { item ->
+            items(visibleSessions, key = { it.session.id }) { item ->
                 SessionCard(
                     item = item,
                     comparisonSelected = item.session.id in comparisonIds,
@@ -186,6 +240,11 @@ private fun SessionCard(
                 )
                 MetricTile("Samples", item.sampleCount.toString(), Modifier.weight(1f))
             }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                MetricTile("Average FPS", item.effectiveAverageFps?.let { "%.1f".format(it) } ?: "N/A", Modifier.weight(1f))
+                MetricTile("1% low", item.session.onePercentLow?.let { "%.1f".format(it) } ?: "N/A", Modifier.weight(1f))
+                MetricTile("Max temp", item.effectiveMaxTemperature?.let { "%.1f C".format(it) } ?: "N/A", Modifier.weight(1f))
+            }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Checkbox(checked = comparisonSelected, onCheckedChange = { onCompare() })
                 Text("Use in comparison", style = MaterialTheme.typography.bodyMedium)
@@ -202,6 +261,17 @@ private fun SessionCard(
 
 @Composable
 private fun ComparisonPanel(sessions: List<SessionDetailUi>, onClear: () -> Unit) {
+    val availableMetrics = remember(sessions) {
+        MetricId.entries.filter { metric -> sessions.any { detail -> detail.samples.any { it.value(metric) != null } } }
+    }
+    var selectedMetricName by rememberSaveable(sessions.map { it.rows.session.id }) {
+        mutableStateOf(
+            availableMetrics.firstOrNull { it == MetricId.FPS }?.name
+                ?: availableMetrics.firstOrNull()?.name,
+        )
+    }
+    val selectedMetric = availableMetrics.firstOrNull { it.name == selectedMetricName }
+        ?: availableMetrics.firstOrNull()
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(18.dp),
@@ -234,6 +304,35 @@ private fun ComparisonPanel(sessions: List<SessionDetailUi>, onClear: () -> Unit
                 DeltaRow("Average GPU", first.averageGpu, second.averageGpu, "%")
                 DeltaRow("Peak power", first.peakPower, second.peakPower, "W")
                 DeltaRow("Max battery temp", first.maxBatteryTemp, second.maxBatteryTemp, "C")
+                if (availableMetrics.isNotEmpty()) {
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        availableMetrics.forEach { metric ->
+                            FilterChip(
+                                selected = metric == selectedMetric,
+                                onClick = { selectedMetricName = metric.name },
+                                label = { Text(metric.displayName()) },
+                            )
+                        }
+                    }
+                }
+                selectedMetric?.let { metric ->
+                    val firstSession = sessions[0].rows.session
+                    val secondSession = sessions[1].rows.session
+                    ComparisonOverlayChart(
+                        first = sessions[0].samples,
+                        second = sessions[1].samples,
+                        metric = metric,
+                        firstStartedAt = firstSession.startedAt,
+                        firstDurationMillis = firstSession.durationMillis
+                            ?: firstSession.endedAt?.minus(firstSession.startedAt),
+                        secondStartedAt = secondSession.startedAt,
+                        secondDurationMillis = secondSession.durationMillis
+                            ?: secondSession.endedAt?.minus(secondSession.startedAt),
+                    )
+                }
             }
         }
     }
@@ -262,6 +361,9 @@ private fun SessionDetailScreen(
 ) {
     var tab by remember(detail.rows.session.id) { mutableIntStateOf(0) }
     var confirmDelete by remember { mutableStateOf(false) }
+    var graphScaleName by rememberSaveable(detail.rows.session.id) {
+        mutableStateOf(ChartScaleMode.MULTI_AXIS.name)
+    }
     val tabs = listOf("Summary", "Graphs", "Analysis", "Quality")
 
     LazyColumn(
@@ -303,7 +405,13 @@ private fun SessionDetailScreen(
         }
         when (tab) {
             0 -> item { SummaryTab(detail) }
-            1 -> item { GraphsTab(detail) }
+            1 -> item {
+                GraphsTab(
+                    detail = detail,
+                    scaleMode = ChartScaleMode.valueOf(graphScaleName),
+                    onScaleMode = { graphScaleName = it.name },
+                )
+            }
             2 -> item { AnalysisTab(detail.samples) }
             else -> item { QualityTab(detail) }
         }
@@ -347,7 +455,14 @@ private fun SummaryTab(detail: SessionDetailUi) {
                 DetailLine("Package", detail.rows.game.packageName)
                 DetailLine("Access", detail.rows.session.accessMode.name)
                 DetailLine("Status", detail.rows.session.status.name)
-                DetailLine("Duration", formatDuration(summary.durationMillis))
+                DetailLine(
+                    "Duration",
+                    formatDuration(
+                        detail.rows.session.durationMillis
+                            ?: detail.rows.session.endedAt?.minus(detail.rows.session.startedAt)
+                            ?: summary.durationMillis,
+                    ),
+                )
                 DetailLine("Samples", detail.samples.size.toString())
                 DetailLine("Device", "${detail.rows.session.deviceManufacturer} ${detail.rows.session.deviceModel}")
                 DetailLine("Android", detail.rows.session.androidVersion)
@@ -387,7 +502,11 @@ private fun DetailLine(label: String, value: String) {
 }
 
 @Composable
-private fun GraphsTab(detail: SessionDetailUi) {
+private fun GraphsTab(
+    detail: SessionDetailUi,
+    scaleMode: ChartScaleMode,
+    onScaleMode: (ChartScaleMode) -> Unit,
+) {
     val availableMetrics = remember(detail.samples) {
         MetricId.entries.filter { metric -> detail.samples.any { it.value(metric) != null } }
     }
@@ -397,7 +516,8 @@ private fun GraphsTab(detail: SessionDetailUi) {
                 .ifEmpty { availableMetrics.take(4).toSet() },
         )
     }
-    var mode by remember { mutableStateOf(ChartLayoutMode.COMBINED) }
+    var modeName by rememberSaveable(detail.rows.session.id) { mutableStateOf(ChartLayoutMode.COMBINED.name) }
+    val mode = ChartLayoutMode.valueOf(modeName)
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         if (availableMetrics.isEmpty()) {
             EmptyState("No graphable readings", "This session contains rows, but every metric value is unavailable.")
@@ -409,7 +529,16 @@ private fun GraphsTab(detail: SessionDetailUi) {
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             ChartLayoutMode.entries.forEach { value ->
-                FilterChip(selected = mode == value, onClick = { mode = value }, label = { Text(value.label) })
+                FilterChip(selected = mode == value, onClick = { modeName = value.name }, label = { Text(value.label) })
+            }
+        }
+        Text("Scale", style = MaterialTheme.typography.titleMedium)
+        Row(
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            ChartScaleMode.entries.forEach { value ->
+                FilterChip(selected = scaleMode == value, onClick = { onScaleMode(value) }, label = { Text(value.label) })
             }
         }
         Text("Metrics", style = MaterialTheme.typography.titleMedium)
@@ -434,6 +563,7 @@ private fun GraphsTab(detail: SessionDetailUi) {
                 samples = detail.samples,
                 metrics = availableMetrics.filter(selectedMetrics::contains),
                 mode = mode,
+                scaleMode = scaleMode,
             )
         }
     }

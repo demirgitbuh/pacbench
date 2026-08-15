@@ -1,5 +1,7 @@
 package com.demirarch.pacbench.ui
 
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -9,9 +11,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -29,16 +33,22 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.demirarch.pacbench.data.local.Game
 import com.demirarch.pacbench.data.local.GameAggregateStats
 import java.util.Locale
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Composable
 fun GamesScreen(
@@ -131,6 +141,8 @@ private fun GameCard(game: Game, stats: GameAggregateStats?, onOpen: () -> Unit)
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
+                AppIcon(game.packageName, Modifier.size(48.dp))
+                Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
                     Text(game.displayName, style = MaterialTheme.typography.titleLarge)
                     Text(
@@ -170,7 +182,9 @@ private fun GameDetailScreen(
     val game = detail.gameWithSessions.game
     val recording by viewModel.recording.collectAsStateWithLifecycle()
     val activePresetId by viewModel.activeHudPresetId.collectAsStateWithLifecycle()
+    val presets by viewModel.allPresets.collectAsStateWithLifecycle()
     var confirmDelete by remember { mutableStateOf(false) }
+    var editableName by remember(game.id, game.displayName) { mutableStateOf(game.displayName) }
     val ownRecording = recording?.packageName == game.packageName
 
     LazyColumn(
@@ -181,6 +195,8 @@ private fun GameDetailScreen(
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 OutlinedButton(onClick = viewModel::closeGame) { Text("Back") }
+                Spacer(Modifier.width(12.dp))
+                AppIcon(game.packageName, Modifier.size(56.dp))
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
                     Text(game.displayName, style = MaterialTheme.typography.headlineMedium)
@@ -200,7 +216,7 @@ private fun GameDetailScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(
-                        "HUD preset: $activePresetId | Stored access mode comes from the first real snapshot.",
+                        "HUD preset: ${game.selectedHudPresetId ?: activePresetId} | Stored access mode comes from the first real snapshot.",
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -215,6 +231,62 @@ private fun GameDetailScreen(
                                 enabled = recording?.active != true,
                                 modifier = Modifier.weight(1f),
                             ) { Text("Record + launch") }
+                        }
+                    }
+                }
+            }
+        }
+        item {
+            Surface(shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Per-game settings", style = MaterialTheme.typography.titleLarge)
+                    OutlinedTextField(
+                        value = editableName,
+                        onValueChange = { editableName = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Display name") },
+                        singleLine = true,
+                    )
+                    OutlinedButton(
+                        onClick = { viewModel.renameGame(game, editableName) },
+                        enabled = editableName.trim() != game.displayName,
+                    ) { Text("Save name") }
+                    if (game.customName != null) {
+                        TextButton(onClick = {
+                            editableName = game.appName
+                            viewModel.renameGame(game, "")
+                        }) { Text("Use app name") }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Automatic monitoring")
+                            Text("Detect this game with Usage Access", style = MaterialTheme.typography.bodySmall)
+                        }
+                        Switch(game.autoMonitoring, { viewModel.setGameAutoMonitoring(game, it) })
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Automatic overlay")
+                            Text("Show the assigned HUD when monitoring starts", style = MaterialTheme.typography.bodySmall)
+                        }
+                        Switch(game.autoOverlay, { viewModel.setGameAutoOverlay(game, it) })
+                    }
+                    Text("Assigned HUD", style = MaterialTheme.typography.titleMedium)
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        FilterChip(
+                            selected = game.selectedHudPresetId == null,
+                            onClick = { viewModel.assignGamePreset(game, null) },
+                            label = { Text("Default") },
+                        )
+                        presets.forEach { preset ->
+                            FilterChip(
+                                selected = game.selectedHudPresetId == preset.id,
+                                onClick = { viewModel.assignGamePreset(game, preset.id) },
+                                label = { Text(preset.name) },
+                            )
                         }
                     }
                 }
@@ -279,12 +351,7 @@ private fun GameDetailScreen(
         AlertDialog(
             onDismissRequest = { confirmDelete = false },
             title = { Text("Remove ${game.displayName}?") },
-            text = {
-                Text(
-                    if (detail.gameWithSessions.sessions.isEmpty()) "The library entry will be removed."
-                    else "Stored sessions reference this game, so Room will reject removal until those sessions are deleted.",
-                )
-            },
+            text = { Text("The game will be hidden from the library. Stored performance sessions remain in Reports.") },
             confirmButton = { TextButton(onClick = { viewModel.deleteGame(game) }) { Text("Remove") } },
             dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } },
         )
@@ -300,6 +367,27 @@ private fun DetailValue(label: String, value: String) {
 }
 
 @Composable
+private fun AppIcon(packageName: String, modifier: Modifier = Modifier) {
+    val packageManager = LocalContext.current.packageManager
+    val bitmap by produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, packageName) {
+        value = withContext(Dispatchers.IO) {
+            runCatching { packageManager.getApplicationIcon(packageName).toBitmap(192, 192).asImageBitmap() }
+                .getOrNull()
+        }
+    }
+    val loadedBitmap = bitmap
+    if (loadedBitmap != null) {
+        Image(bitmap = loadedBitmap, contentDescription = null, modifier = modifier)
+    } else {
+        Surface(modifier = modifier, shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.primaryContainer) {
+            androidx.compose.foundation.layout.Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text(packageName.take(1).uppercase(), color = MaterialTheme.colorScheme.primary)
+            }
+        }
+    }
+}
+
+@Composable
 private fun GamePickerDialog(
     viewModel: PacBenchViewModel,
     savedPackages: Set<String>,
@@ -307,7 +395,7 @@ private fun GamePickerDialog(
 ) {
     val installed by viewModel.installedGames.collectAsStateWithLifecycle()
     val discovering by viewModel.discoveringGames.collectAsStateWithLifecycle()
-    var pickerMode by remember { mutableStateOf("discover") }
+    var pickerMode by remember { mutableStateOf("games") }
     var packageName by remember { mutableStateOf("") }
     var displayName by remember { mutableStateOf("") }
 
@@ -323,9 +411,14 @@ private fun GamePickerDialog(
                 Text("Add a game", style = MaterialTheme.typography.headlineMedium)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilterChip(
-                        selected = pickerMode == "discover",
-                        onClick = { pickerMode = "discover" },
-                        label = { Text("Discover") },
+                        selected = pickerMode == "games",
+                        onClick = { pickerMode = "games" },
+                        label = { Text("Auto games") },
+                    )
+                    FilterChip(
+                        selected = pickerMode == "all",
+                        onClick = { pickerMode = "all" },
+                        label = { Text("All apps") },
                     )
                     FilterChip(
                         selected = pickerMode == "manual",
@@ -333,16 +426,17 @@ private fun GamePickerDialog(
                         label = { Text("Manual package") },
                     )
                 }
-                if (pickerMode == "discover") {
+                if (pickerMode != "manual") {
+                    val visibleApps = if (pickerMode == "games") installed.filter(InstalledGame::likelyGame) else installed
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            if (discovering) "Reading launcher activities..." else "${installed.size} launchable app(s) visible",
+                            if (discovering) "Reading launcher activities..." else "${visibleApps.size} matching app(s)",
                             modifier = Modifier.weight(1f),
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         TextButton(onClick = viewModel::discoverInstalledGames, enabled = !discovering) { Text("Refresh") }
                     }
-                    if (!discovering && installed.isEmpty()) {
+                    if (!discovering && visibleApps.isEmpty()) {
                         EmptyState(
                             "No launcher packages visible",
                             "Android package visibility may limit discovery. Use Manual package for an exact ID.",
@@ -352,7 +446,7 @@ private fun GamePickerDialog(
                             modifier = Modifier.heightIn(max = 430.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            items(installed, key = InstalledGame::packageName) { game ->
+                            items(visibleApps, key = InstalledGame::packageName) { game ->
                                 Surface(
                                     shape = RoundedCornerShape(13.dp),
                                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),

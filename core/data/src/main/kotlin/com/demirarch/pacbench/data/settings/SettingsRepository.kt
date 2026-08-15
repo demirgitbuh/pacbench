@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.MutablePreferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.intPreferencesKey
@@ -31,6 +32,7 @@ enum class GraphMode {
 data class PacBenchSettings(
     val samplingIntervalMillis: Long = DEFAULT_SAMPLING_INTERVAL_MILLIS,
     val autoDetectionTimeoutMillis: Long = DEFAULT_AUTO_DETECTION_TIMEOUT_MILLIS,
+    val automaticDetectionEnabled: Boolean = false,
     val enabledMetrics: Set<MetricId> = MetricId.entries.toSet(),
     val theme: ThemeMode = ThemeMode.SYSTEM,
     val graphMode: GraphMode = GraphMode.LIVE,
@@ -61,6 +63,8 @@ interface SettingsRepository {
     suspend fun setSamplingIntervalMillis(value: Long)
 
     suspend fun setAutoDetectionTimeoutMillis(value: Long)
+
+    suspend fun setAutomaticDetectionEnabled(value: Boolean)
 
     suspend fun setEnabledMetrics(value: Set<MetricId>)
 
@@ -102,6 +106,10 @@ class DataStoreSettingsRepository(
     override suspend fun setAutoDetectionTimeoutMillis(value: Long) {
         require(value in 1_000L..300_000L)
         dataStore.edit { it[Keys.autoDetectionTimeout] = value }
+    }
+
+    override suspend fun setAutomaticDetectionEnabled(value: Boolean) {
+        dataStore.edit { it[Keys.automaticDetectionEnabled] = value }
     }
 
     override suspend fun setEnabledMetrics(value: Set<MetricId>) {
@@ -148,6 +156,7 @@ class DataStoreSettingsRepository(
         autoDetectionTimeoutMillis = preferences[Keys.autoDetectionTimeout]
             ?.takeIf { it in 1_000L..300_000L }
             ?: PacBenchSettings.DEFAULT_AUTO_DETECTION_TIMEOUT_MILLIS,
+        automaticDetectionEnabled = preferences[Keys.automaticDetectionEnabled] ?: false,
         enabledMetrics = preferences[Keys.enabledMetrics]
             ?.mapNotNullTo(mutableSetOf()) { name -> enumValueOrNull<MetricId>(name) }
             ?: MetricId.entries.toSet(),
@@ -170,6 +179,7 @@ class DataStoreSettingsRepository(
     ) {
         preferences[Keys.samplingInterval] = settings.samplingIntervalMillis
         preferences[Keys.autoDetectionTimeout] = settings.autoDetectionTimeoutMillis
+        preferences[Keys.automaticDetectionEnabled] = settings.automaticDetectionEnabled
         preferences[Keys.enabledMetrics] = settings.enabledMetrics.mapTo(mutableSetOf(), MetricId::name)
         preferences[Keys.theme] = settings.theme.name
         preferences[Keys.graphMode] = settings.graphMode.name
@@ -181,6 +191,7 @@ class DataStoreSettingsRepository(
     private object Keys {
         val samplingInterval = longPreferencesKey("sampling_interval_millis")
         val autoDetectionTimeout = longPreferencesKey("auto_detection_timeout_millis")
+        val automaticDetectionEnabled = booleanPreferencesKey("automatic_detection_enabled")
         val enabledMetrics = stringSetPreferencesKey("enabled_metrics")
         val theme = stringPreferencesKey("theme")
         val graphMode = stringPreferencesKey("graph_mode")

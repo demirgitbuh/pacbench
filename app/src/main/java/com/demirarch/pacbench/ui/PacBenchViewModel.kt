@@ -9,6 +9,7 @@ import android.net.Uri
 import android.os.Process
 import android.provider.Settings
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.demirarch.pacbench.data.repository.GameRepository
@@ -46,10 +47,13 @@ import com.demirarch.pacbench.service.MonitoringService
 import com.demirarch.pacbench.service.MonitoringState
 import com.demirarch.pacbench.service.MonitoringStateStore
 import dagger.hilt.android.lifecycle.HiltViewModel
+import java.io.File
+import java.nio.charset.StandardCharsets
 import java.util.UUID
 import javax.inject.Inject
 import kotlin.math.round
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -60,12 +64,17 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
 
 data class InstalledGame(
     val packageName: String,
     val displayName: String,
     val versionName: String?,
     val versionCode: Long?,
+    val likelyGame: Boolean,
 )
 
 data class GameDetailUi(
@@ -169,6 +178,8 @@ class PacBenchViewModel @Inject constructor(
     val presets = presetQuery
         .flatMapLatest(hudRepository::observePresets)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val allPresets = hudRepository.observePresets()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val installedGames = MutableStateFlow<List<InstalledGame>>(emptyList())
     val discoveringGames = MutableStateFlow(false)
@@ -191,6 +202,7 @@ class PacBenchViewModel @Inject constructor(
     private val undo = ArrayDeque<HudPreset>()
     private val redo = ArrayDeque<HudPreset>()
     private var transactionStart: HudPreset? = null
+    private var comparisonJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -229,6 +241,13 @@ class PacBenchViewModel @Inject constructor(
         viewModelScope.launch {
             runCatching { hudRepository.seedBuiltIns(System.currentTimeMillis()) }
                 .onFailure { showError("HUD presets", it) }
+        }
+        viewModelScope.launch {
+            val configured = settingsRepository.settings.first().automaticDetectionEnabled
+            if (configured) {
+                val canRestore = hasUsageAccess() && gameRepository.observeGames().first().any(Game::autoMonitoring)
+                if (canRestore) startAutomaticMonitoring() else settingsRepository.setAutomaticDetectionEnabled(false)
+            }
         }
         refreshAccess()
     }
@@ -312,11 +331,21 @@ class PacBenchViewModel @Inject constructor(
         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
 
     fun startAutomaticMonitoring() {
+        if (recording.value?.active == true) {
+            message.value = "Stop the current session before starting automatic detection."
+            return
+        }
         if (!hasUsageAccess()) {
             message.value = "Usage access is required for automatic monitoring."
             return
         }
-        runCatching { MonitoringService.startAutomaticDetection(app, showHud = true) }
+        runCatching {
+            MonitoringService.startAutomaticDetection(
+                app,
+                showHud = true,
+                hudPresetId = activeHudPresetId.value,
+            )
+        }
             .onFailure { showError("Start automatic monitoring", it) }
     }
 
@@ -344,6 +373,7 @@ class PacBenchViewModel @Inject constructor(
                             displayName = applicationInfo.loadLabel(manager).toString(),
                             versionName = info.versionName,
                             versionCode = info.longVersionCode,
+                            likelyGame = applicationInfo.category == android.content.pm.ApplicationInfo.CATEGORY_GAME,
                         )
                     }
                     .sortedBy(InstalledGame::displayName)
@@ -368,12 +398,20 @@ class PacBenchViewModel @Inject constructor(
         }
         viewModelScope.launch(Dispatchers.IO) {
             val installed = installedGame(packageValue)
-            val name = displayName.trim().ifBlank { installed?.displayName.orEmpty() }
+            val enteredName = displayName.trim()
+            val name = enteredName.ifBlank { installed?.displayName.orEmpty() }
             if (name.isBlank()) {
                 message.value = "Display name is required when the package is not installed."
                 return@launch
             }
-            saveGameNow(packageValue, name, installed?.versionName, installed?.versionCode)
+            saveGameNow(
+                packageName = packageValue,
+                displayName = name,
+                versionName = installed?.versionName,
+                versionCode = installed?.versionCode,
+                appName = installed?.displayName ?: packageValue,
+                customName = enteredName.takeIf(String::isNotBlank),
+            )
         }
     }
 
@@ -393,6 +431,8 @@ class PacBenchViewModel @Inject constructor(
         displayName: String,
         versionName: String?,
         versionCode: Long?,
+        appName: String = displayName,
+        customName: String? = null,
     ) {
         runCatching {
             val now = System.currentTimeMillis()
@@ -400,6 +440,8 @@ class PacBenchViewModel @Inject constructor(
                 Game(
                     packageName = packageName,
                     displayName = displayName,
+                    appName = appName,
+                    customName = customName,
                     versionName = versionName,
                     versionCode = versionCode,
                     firstSeenAt = now,
@@ -443,8 +485,32 @@ class PacBenchViewModel @Inject constructor(
                     message.value = "${game.displayName} removed."
                 }
                 .onFailure {
-                    message.value = "Game cannot be removed while stored sessions reference it."
+                    showError("Remove game", it)
                 }
+        }
+    }
+
+    fun renameGame(game: Game, name: String) = updateGameField(game, "Rename game") {
+        gameRepository.setCustomName(game.id, name.trim().takeIf(String::isNotBlank))
+    }
+
+    fun setGameAutoMonitoring(game: Game, enabled: Boolean) = updateGameField(game, "Automatic monitoring") {
+        gameRepository.setAutoMonitoring(game.id, enabled)
+    }
+
+    fun setGameAutoOverlay(game: Game, enabled: Boolean) = updateGameField(game, "Automatic overlay") {
+        gameRepository.setAutoOverlay(game.id, enabled)
+    }
+
+    fun assignGamePreset(game: Game, presetId: String?) = updateGameField(game, "Assign HUD") {
+        gameRepository.setHudPreset(game.id, presetId)
+    }
+
+    private fun updateGameField(game: Game, action: String, update: suspend () -> Boolean) {
+        viewModelScope.launch {
+            runCatching { check(update()) { "Game ${game.id} does not exist" } }
+                .onSuccess { openGame(game.id) }
+                .onFailure { showError(action, it) }
         }
     }
 
@@ -470,8 +536,8 @@ class PacBenchViewModel @Inject constructor(
                     context = app,
                     packageName = game.packageName,
                     displayName = game.displayName,
-                    showHud = true,
-                    hudPresetId = activeHudPresetId.value,
+                    showHud = game.autoOverlay,
+                    hudPresetId = game.selectedHudPresetId ?: activeHudPresetId.value,
                 ),
             )
         }.onSuccess {
@@ -555,11 +621,13 @@ class PacBenchViewModel @Inject constructor(
 
     private fun loadComparison() {
         val ids = comparisonIds.value.toList()
-        viewModelScope.launch {
-            comparisonSessions.value = ids.mapNotNull { id ->
+        comparisonJob?.cancel()
+        comparisonJob = viewModelScope.launch {
+            val loaded = ids.mapNotNull { id ->
                 runCatching { sessionRepository.getSessionWithRows(id)?.let(::SessionDetailUi) }
                     .getOrNull()
             }
+            if (comparisonIds.value.toList() == ids) comparisonSessions.value = loaded
         }
     }
 
@@ -577,6 +645,35 @@ class PacBenchViewModel @Inject constructor(
     fun setGraphMode(value: GraphMode) = updateSetting { settingsRepository.setGraphMode(value) }
     fun setSamplingInterval(value: Long) = updateSetting { settingsRepository.setSamplingIntervalMillis(value) }
     fun setAutoDetectionTimeout(value: Long) = updateSetting { settingsRepository.setAutoDetectionTimeoutMillis(value) }
+    fun setAutomaticDetection(enabled: Boolean) {
+        if (enabled && recording.value?.active == true) {
+            message.value = "Stop the current session before enabling automatic detection."
+            return
+        }
+        updateSetting {
+            if (enabled && !hasUsageAccess()) {
+                error("Usage access is required for automatic monitoring")
+            }
+            if (enabled && gameRepository.observeGames().first().none(Game::autoMonitoring)) {
+                error("Enable automatic monitoring for at least one game first")
+            }
+            settingsRepository.setAutomaticDetectionEnabled(enabled)
+            runCatching {
+                if (enabled) {
+                    MonitoringService.startAutomaticDetection(
+                        app,
+                        showHud = true,
+                        hudPresetId = activeHudPresetId.value,
+                    )
+                } else {
+                    MonitoringService.disableAutomaticDetection(app)
+                }
+            }.onFailure {
+                if (enabled) settingsRepository.setAutomaticDetectionEnabled(false)
+                throw it
+            }
+        }
+    }
     fun setRetentionDays(value: Int) = updateSetting { settingsRepository.setRetentionDays(value) }
     fun setDatabaseCap(value: Long) = updateSetting { settingsRepository.setDatabaseCapBytes(value) }
     fun setPingEndpoint(value: String) = updateSetting { settingsRepository.setPingEndpoint(value) }
@@ -587,6 +684,7 @@ class PacBenchViewModel @Inject constructor(
 
     fun resetSettings() = updateSetting {
         settingsRepository.reset()
+        MonitoringService.disableAutomaticDetection(app)
         message.value = "Settings reset."
     }
 
@@ -643,7 +741,11 @@ class PacBenchViewModel @Inject constructor(
 
     fun deleteHudPreset(preset: HudPreset) {
         viewModelScope.launch {
-            runCatching { hudRepository.deleteCustom(preset.id) }
+            runCatching {
+                val deleted = hudRepository.deleteCustom(preset.id)
+                if (deleted) gameRepository.clearHudPresetAssignments(preset.id)
+                deleted
+            }
                 .onSuccess { deleted ->
                     if (deleted && activeHudPresetId.value == preset.id) {
                         activeHudPresetId.value = "benchmark"
@@ -652,6 +754,55 @@ class PacBenchViewModel @Inject constructor(
                     message.value = if (deleted) "${preset.name} deleted." else "Built-in presets cannot be deleted."
                 }
                 .onFailure { showError("Delete HUD", it) }
+        }
+    }
+
+    fun exportHudPreset(preset: HudPreset) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                val directory = File(app.cacheDir, "exports").apply { check(exists() || mkdirs()) }
+                val safeName = preset.name.replace(Regex("[^A-Za-z0-9._-]"), "_")
+                    .take(60)
+                    .ifBlank { "hud-preset" }
+                val safeId = preset.id.replace(Regex("[^A-Za-z0-9._-]"), "_").take(64)
+                val file = File(directory, "$safeName-$safeId-${System.currentTimeMillis()}.pacbench-hud.json")
+                file.writeText(Json { encodeDefaults = true }.encodeToString(preset))
+                val uri = FileProvider.getUriForFile(app, "${app.packageName}.fileprovider", file)
+                app.startActivity(
+                    Intent.createChooser(
+                        Intent(Intent.ACTION_SEND).apply {
+                            type = "application/json"
+                            putExtra(Intent.EXTRA_STREAM, uri)
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        },
+                        "Share HUD preset",
+                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            }.onFailure { showError("Export HUD", it) }
+        }
+    }
+
+    fun importHudPreset(uri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                val bytes = requireNotNull(app.contentResolver.openInputStream(uri)).buffered().use { input ->
+                    input.readNBytes(MAX_HUD_IMPORT_BYTES + 1)
+                }
+                require(bytes.size <= MAX_HUD_IMPORT_BYTES) { "HUD preset exceeds the 1 MB import limit" }
+                val text = String(bytes, StandardCharsets.UTF_8)
+                val decoder = Json { ignoreUnknownKeys = false }
+                require("schemaVersion" in decoder.parseToJsonElement(text).jsonObject) {
+                    "HUD schemaVersion is required"
+                }
+                val imported = decoder.decodeFromString<HudPreset>(text)
+                require(imported.schemaVersion == 1) { "Unsupported HUD schema ${imported.schemaVersion}" }
+                val custom = imported.copy(
+                    id = "custom-${UUID.randomUUID()}",
+                    name = imported.name.ifBlank { "Imported HUD" },
+                )
+                hudRepository.save(custom, System.currentTimeMillis())
+                message.value = "${custom.name} imported."
+            }.onFailure { showError("Import HUD", it) }
         }
     }
 
@@ -697,13 +848,21 @@ class PacBenchViewModel @Inject constructor(
 
     fun addWidget(type: HudWidgetType = HudWidgetType.METRIC_WITH_UNIT) {
         val state = editor.value ?: return
+        if (state.preset.widgets.size >= MAX_HUD_WIDGETS) {
+            message.value = "A HUD can contain at most $MAX_HUD_WIDGETS widgets."
+            return
+        }
         val nextLayer = (state.preset.widgets.maxOfOrNull(HudWidget::layer) ?: -1) + 1
         val offset = (state.preset.widgets.size % 6) * state.preset.gridSize
+        val widgetWidth = minOf(116f, state.preset.canvasWidth)
+        val widgetHeight = minOf(44f, state.preset.canvasHeight)
         val widget = HudWidget(
             id = "widget-${UUID.randomUUID()}",
             type = type,
-            x = 16f + offset,
-            y = 16f + offset,
+            x = (16f + offset).coerceAtMost(state.preset.canvasWidth - widgetWidth),
+            y = (16f + offset).coerceAtMost(state.preset.canvasHeight - widgetHeight),
+            width = widgetWidth,
+            height = widgetHeight,
             layer = nextLayer,
         )
         editPreset(selectedId = widget.id) { it.copy(widgets = it.widgets + widget) }
@@ -741,19 +900,21 @@ class PacBenchViewModel @Inject constructor(
 
     fun resizeWidget(id: String, deltaWidth: Float, deltaHeight: Float) {
         transformWidgetTransient(id) { widget, preset, snap ->
-            val maximumWidth = (preset.canvasWidth - widget.x).coerceAtLeast(32f)
-            val maximumHeight = (preset.canvasHeight - widget.y).coerceAtLeast(24f)
+            val maximumWidth = (preset.canvasWidth - widget.x).coerceAtLeast(1f)
+            val maximumHeight = (preset.canvasHeight - widget.y).coerceAtLeast(1f)
+            val minimumWidth = minOf(32f, maximumWidth)
+            val minimumHeight = minOf(24f, maximumHeight)
             widget.copy(
                 width = snapValue(
-                    (widget.width + deltaWidth).coerceIn(32f, maximumWidth),
+                    (widget.width + deltaWidth).coerceIn(minimumWidth, maximumWidth),
                     preset.gridSize,
                     snap,
-                ).coerceIn(32f, maximumWidth),
+                ).coerceIn(minimumWidth, maximumWidth),
                 height = snapValue(
-                    (widget.height + deltaHeight).coerceIn(24f, maximumHeight),
+                    (widget.height + deltaHeight).coerceIn(minimumHeight, maximumHeight),
                     preset.gridSize,
                     snap,
-                ).coerceIn(24f, maximumHeight),
+                ).coerceIn(minimumHeight, maximumHeight),
             )
         }
     }
@@ -772,6 +933,10 @@ class PacBenchViewModel @Inject constructor(
     fun duplicateSelectedWidget() {
         val state = editor.value ?: return
         val selected = state.selectedWidget ?: return
+        if (state.preset.widgets.size >= MAX_HUD_WIDGETS) {
+            message.value = "A HUD can contain at most $MAX_HUD_WIDGETS widgets."
+            return
+        }
         val grid = state.preset.gridSize
         val copy = selected.copy(
             id = "widget-${UUID.randomUUID()}",
@@ -879,6 +1044,7 @@ class PacBenchViewModel @Inject constructor(
             displayName = info.applicationInfo?.loadLabel(manager)?.toString().orEmpty(),
             versionName = info.versionName,
             versionCode = info.longVersionCode,
+            likelyGame = info.applicationInfo?.category == android.content.pm.ApplicationInfo.CATEGORY_GAME,
         )
     }.getOrNull()
 
@@ -914,5 +1080,7 @@ class PacBenchViewModel @Inject constructor(
         const val ONBOARDING_COMPLETE = "onboarding_complete"
         const val ACTIVE_HUD_PRESET = "active_hud_preset"
         const val HISTORY_LIMIT = 80
+        const val MAX_HUD_WIDGETS = 200
+        const val MAX_HUD_IMPORT_BYTES = 1024 * 1024
     }
 }

@@ -40,6 +40,14 @@ jobs:
       - name: Run lint and unit tests
         run: ./gradlew --no-daemon --stacktrace lint test
 
+      - name: Upload Room schemas
+        uses: actions/upload-artifact@v4
+        with:
+          name: room-schemas-${{ github.sha }}
+          path: core/data/schemas
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Assemble debug build
         run: ./gradlew --no-daemon --stacktrace assembleDebug
 
