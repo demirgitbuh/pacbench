@@ -11,5 +11,5 @@
     <string name="monitoring_notification">PacBench %1$s uygulamasını izliyor</string>
     <string name="stop">Durdur</string>
     <string name="toggle_hud">HUD aç/kapat</string>
-    <string name="open_app">PacBench'i aç</string>
+    <string name="open_app">PacBench\'i aç</string>
 </resources>
